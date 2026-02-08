@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Query
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 from dotenv import load_dotenv
@@ -300,14 +300,15 @@ async def process_video_upload(
 @app.get("/document/{session_id}", response_model=HelperDocResponse, tags=["2. Helper Documents"])
 def get_helper_document(
     session_id: str,
+    request: Request,
     user_id: str = Query(..., description="Your unique user identifier"),
 ):
     """
-    Generate a helper document with key points.
+    Generate a helper document with key points and screenshots.
 
     Returns:
     - **Overview**: Summary of the video
-    - **Key Points**: Important topics with timestamps and importance levels
+    - **Key Points**: Important topics with timestamps, importance levels, and screenshots
     - **Action Items**: Actionable takeaways
     - **Markdown**: Formatted document ready to save
     """
@@ -319,6 +320,15 @@ def get_helper_document(
         doc = query_handler.generate_helper_document(
             session["transcript"],
             session["title"],
+        )
+
+        # Extract screenshots for each key point
+        base_url = str(request.base_url).rstrip("/")
+        video_transcriber.extract_screenshots_for_key_points(
+            key_points=doc["key_points"],
+            session=session,
+            user_id=user_id,
+            base_url=base_url,
         )
 
         markdown = query_handler.format_helper_document_markdown(doc)
@@ -339,10 +349,11 @@ def get_helper_document(
 @app.get("/document/{session_id}/download", tags=["2. Helper Documents"])
 def download_helper_document(
     session_id: str,
+    request: Request,
     user_id: str = Query(..., description="Your unique user identifier"),
 ):
     """
-    Download the helper document as a Markdown file.
+    Download the helper document as a Markdown file (includes screenshot references).
     """
     session = db.get_session(session_id, user_id)
     if not session:
@@ -351,6 +362,15 @@ def download_helper_document(
     doc = query_handler.generate_helper_document(
         session["transcript"],
         session["title"],
+    )
+
+    # Extract screenshots for each key point
+    base_url = str(request.base_url).rstrip("/")
+    video_transcriber.extract_screenshots_for_key_points(
+        key_points=doc["key_points"],
+        session=session,
+        user_id=user_id,
+        base_url=base_url,
     )
 
     markdown = query_handler.format_helper_document_markdown(doc)
@@ -364,6 +384,25 @@ def download_helper_document(
         output_path,
         media_type="text/markdown",
         filename=f"{session['title']}_helper.md",
+    )
+
+
+@app.get("/screenshots/{user_id}/{filename}", tags=["2. Helper Documents"])
+def get_screenshot(user_id: str, filename: str):
+    """
+    Serve a screenshot image extracted from a video.
+
+    Screenshots are generated when helper documents are created and cached
+    for subsequent requests.
+    """
+    file_path = db.get_user_screenshot_path(user_id, filename)
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+
+    return FileResponse(
+        file_path,
+        media_type="image/jpeg",
+        filename=filename,
     )
 
 
@@ -718,6 +757,15 @@ def delete_session(
         if snippets_dir.exists():
             import shutil
             shutil.rmtree(snippets_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    # Delete screenshots for this session
+    try:
+        screenshots_dir = db.get_user_storage_path(user_id, "screenshots")
+        if screenshots_dir.exists():
+            for f in screenshots_dir.glob(f"screenshot_{session_id}_*.jpg"):
+                f.unlink(missing_ok=True)
     except Exception:
         pass
 

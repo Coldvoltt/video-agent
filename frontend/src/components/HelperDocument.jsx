@@ -114,6 +114,15 @@ function HelperDocument({ userId, sessionId }) {
               {formatTime(kp.timestamp_start)} - {formatTime(kp.timestamp_end)}
             </span>
           </div>
+          {kp.screenshot_url && (
+            <div style={{ marginBottom: 12 }}>
+              <img
+                src={kp.screenshot_url}
+                alt={`Screenshot at ${formatTime(kp.timestamp_start)}`}
+                style={{ width: '100%', borderRadius: 'var(--radius-md)' }}
+              />
+            </div>
+          )}
           <div className="markdown-content" style={{ color: 'var(--text-secondary)' }}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>
               {kp.summary}

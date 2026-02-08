@@ -205,6 +205,8 @@ def format_helper_document_markdown(doc: dict) -> str:
         timestamp = _format_time(kp["timestamp_start"])
         md += f"### {i}. {kp['title']}\n"
         md += f"**Timestamp:** {timestamp} | **Importance:** {kp['importance']}\n\n"
+        if kp.get("screenshot_url"):
+            md += f"![Screenshot at {timestamp}]({kp['screenshot_url']})\n\n"
         md += f"{kp['summary']}\n\n"
 
     if doc.get("action_items"):

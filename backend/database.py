@@ -306,5 +306,10 @@ def get_user_snippet_path(user_id: str, filename: str) -> Path:
     return get_user_storage_path(user_id, "snippets") / filename
 
 
+def get_user_screenshot_path(user_id: str, filename: str) -> Path:
+    """Get path for user's screenshot file."""
+    return get_user_storage_path(user_id, "screenshots") / filename
+
+
 # Initialize database on module import
 init_db()

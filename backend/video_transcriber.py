@@ -590,3 +590,214 @@ def create_video_snippet(video_path: str, start_time: float, end_time: float, ou
     video.close()
 
     return final_path
+
+
+# ============================================================
+# SCREENSHOT / FRAME EXTRACTION
+# ============================================================
+
+def _get_ffmpeg_binary() -> str:
+    """Get the ffmpeg binary path from imageio-ffmpeg (bundled with moviepy)."""
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def _get_youtube_stream_url(video_url: str) -> str:
+    """
+    Get direct video stream URL from YouTube using yt-dlp.
+
+    Uses format 18 (360p progressive MP4 over HTTPS) which works with
+    plain ffmpeg without requiring authentication headers. This format
+    is available on virtually all YouTube videos.
+
+    Args:
+        video_url: YouTube video URL
+
+    Returns:
+        Direct stream URL
+
+    Raises:
+        RuntimeError: If yt-dlp cannot resolve the stream URL
+    """
+    import yt_dlp
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "format": "18",  # 360p progressive MP4 - no auth headers needed
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            stream_url = info.get("url")
+            if not stream_url:
+                raise RuntimeError("Could not resolve video stream URL")
+            return stream_url
+    except Exception as e:
+        raise RuntimeError(f"Failed to get YouTube stream URL: {e}")
+
+
+def _extract_frame_with_ffmpeg(input_path: str, timestamp: float, output_path: str) -> str:
+    """
+    Extract a single frame using the ffmpeg binary bundled via imageio-ffmpeg.
+
+    Args:
+        input_path: Video file path or stream URL
+        timestamp: Time in seconds
+        output_path: Full path for the output JPEG file
+
+    Returns:
+        The output_path on success
+
+    Raises:
+        RuntimeError: If ffmpeg fails
+    """
+    import subprocess
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+    ffmpeg_bin = _get_ffmpeg_binary()
+    cmd = [
+        ffmpeg_bin,
+        "-ss", str(timestamp),
+        "-i", input_path,
+        "-frames:v", "1",
+        "-q:v", "2",
+        "-y",
+        output_path,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+    if result.returncode != 0:
+        # Extract the actual error line from ffmpeg stderr
+        error_lines = [l for l in result.stderr.splitlines() if l.strip() and not l.startswith("  ")]
+        error_msg = error_lines[-1] if error_lines else result.stderr[:500]
+        raise RuntimeError(f"ffmpeg failed: {error_msg}")
+
+    if not Path(output_path).exists():
+        raise RuntimeError("ffmpeg produced no output file")
+
+    return output_path
+
+
+def extract_frame_youtube(video_url: str, timestamp: float, output_path: str) -> str:
+    """
+    Extract a single frame from a YouTube video at the given timestamp.
+
+    Uses yt-dlp to get the direct stream URL, then ffmpeg to extract the frame.
+    No full video download is needed.
+
+    Args:
+        video_url: YouTube video URL
+        timestamp: Time in seconds to extract the frame
+        output_path: Full path for the output JPEG file
+
+    Returns:
+        The output_path on success
+
+    Raises:
+        RuntimeError: If yt-dlp or ffmpeg fails
+    """
+    stream_url = _get_youtube_stream_url(video_url)
+    return _extract_frame_with_ffmpeg(stream_url, timestamp, output_path)
+
+
+def extract_frame_local(video_path: str, timestamp: float, output_path: str) -> str:
+    """
+    Extract a single frame from a local video file at the given timestamp.
+
+    Args:
+        video_path: Path to the local video file
+        timestamp: Time in seconds to extract the frame
+        output_path: Full path for the output JPEG file
+
+    Returns:
+        The output_path on success
+
+    Raises:
+        FileNotFoundError: If the video file doesn't exist
+        RuntimeError: If ffmpeg fails
+    """
+    if not Path(video_path).exists():
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+
+    return _extract_frame_with_ffmpeg(video_path, timestamp, output_path)
+
+
+def extract_screenshots_for_key_points(
+    key_points: list,
+    session: dict,
+    user_id: str,
+    base_url: str = "",
+) -> list:
+    """
+    Extract screenshots for each key point and add screenshot_url to each.
+
+    For each key point, checks if a cached screenshot exists on disk.
+    If not, extracts the frame at timestamp_start. Failures for individual
+    key points are silently handled (screenshot_url set to None).
+
+    Args:
+        key_points: List of key point dicts with timestamp_start
+        session: Session dict with source, video_url, video_path, id
+        user_id: User ID for storage path
+        base_url: API base URL for constructing screenshot URLs
+
+    Returns:
+        The same key_points list with screenshot_url added to each dict
+    """
+    import database as db
+
+    # Verify ffmpeg is available via imageio-ffmpeg
+    try:
+        _get_ffmpeg_binary()
+    except Exception:
+        print("Warning: ffmpeg binary not available. Skipping screenshot extraction.")
+        for kp in key_points:
+            kp["screenshot_url"] = None
+        return key_points
+
+    session_id = session["id"]
+    source = session.get("source", "")
+
+    # For YouTube, get stream URL once and reuse for all key points
+    stream_url = None
+    if source == "youtube" and session.get("video_url"):
+        try:
+            stream_url = _get_youtube_stream_url(session["video_url"])
+        except Exception as e:
+            print(f"Warning: Could not get YouTube stream URL: {e}")
+            for kp in key_points:
+                kp["screenshot_url"] = None
+            return key_points
+
+    for kp in key_points:
+        try:
+            timestamp = kp.get("timestamp_start", 0)
+            filename = f"screenshot_{session_id}_{int(timestamp)}.jpg"
+            file_path = db.get_user_screenshot_path(user_id, filename)
+
+            # Cache hit — file already exists
+            if file_path.exists():
+                kp["screenshot_url"] = f"{base_url}/screenshots/{user_id}/{filename}"
+                continue
+
+            # Extract frame based on source type
+            if source == "youtube" and stream_url:
+                _extract_frame_with_ffmpeg(stream_url, timestamp, str(file_path))
+            elif source == "local" and session.get("video_path"):
+                extract_frame_local(session["video_path"], timestamp, str(file_path))
+            else:
+                kp["screenshot_url"] = None
+                continue
+
+            kp["screenshot_url"] = f"{base_url}/screenshots/{user_id}/{filename}"
+
+        except Exception as e:
+            print(f"Warning: Failed to extract screenshot at {kp.get('timestamp_start', '?')}s: {e}")
+            kp["screenshot_url"] = None
+
+    return key_points
