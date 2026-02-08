@@ -1,0 +1,19 @@
+# Video Processing
+yt-dlp>=2024.1.0
+moviepy>=2.2.1
+pydub>=0.25.1
+
+# OpenAI API
+openai>=1.12.0
+
+# RAG / Vector DB
+chromadb>=0.4.22
+
+# FastAPI
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6
+
+# Configuration
+python-dotenv>=1.0.0
+pydantic>=2.5.0
