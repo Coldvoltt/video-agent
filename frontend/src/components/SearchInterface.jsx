@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { searchVideo } from '../api/videoApi';
 
 function SearchInterface({ userId, sessionId }) {
@@ -7,6 +7,29 @@ function SearchInterface({ userId, sessionId }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [searched, setSearched] = useState(false);
+
+  // ── Per-session cache ──
+  const cache = useRef({});
+  const prevSession = useRef(sessionId);
+
+  useEffect(() => {
+    if (prevSession.current !== sessionId) {
+      cache.current[prevSession.current] = { query, results, searched };
+      prevSession.current = sessionId;
+
+      const saved = cache.current[sessionId];
+      if (saved) {
+        setQuery(saved.query);
+        setResults(saved.results);
+        setSearched(saved.searched);
+      } else {
+        setQuery('');
+        setResults([]);
+        setSearched(false);
+      }
+      setError(null);
+    }
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSearch = async (e) => {
     e.preventDefault();

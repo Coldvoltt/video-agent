@@ -149,40 +149,40 @@ function App() {
                 ))}
               </div>
 
-              {activeTab === 'chat' && (
+              <div style={{ display: activeTab === 'chat' ? 'block' : 'none' }}>
                 <ChatInterface
                   userId={userId}
                   sessionId={currentSession.session_id}
                 />
-              )}
+              </div>
 
-              {activeTab === 'search' && (
+              <div style={{ display: activeTab === 'search' ? 'block' : 'none' }}>
                 <SearchInterface
                   userId={userId}
                   sessionId={currentSession.session_id}
                 />
-              )}
+              </div>
 
-              {activeTab === 'document' && (
+              <div style={{ display: activeTab === 'document' ? 'block' : 'none' }}>
                 <HelperDocument
                   userId={userId}
                   sessionId={currentSession.session_id}
                 />
-              )}
+              </div>
 
-              {activeTab === 'transcript' && (
+              <div style={{ display: activeTab === 'transcript' ? 'block' : 'none' }}>
                 <Transcript
                   userId={userId}
                   sessionId={currentSession.session_id}
                 />
-              )}
+              </div>
 
-              {activeTab === 'snippets' && (
+              <div style={{ display: activeTab === 'snippets' ? 'block' : 'none' }}>
                 <SnippetCreator
                   userId={userId}
                   sessionId={currentSession.session_id}
                 />
-              )}
+              </div>
             </div>
           ) : (
             <div className="empty-state">

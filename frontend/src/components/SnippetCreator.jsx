@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createSnippetFromQuery, createSnippetFromTimestamp, getSnippetUrl } from '../api/videoApi';
 
 function SnippetCreator({ userId, sessionId }) {
@@ -10,6 +10,31 @@ function SnippetCreator({ userId, sessionId }) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+
+  // ── Per-session cache ──
+  const cache = useRef({});
+  const prevSession = useRef(sessionId);
+
+  useEffect(() => {
+    if (prevSession.current !== sessionId) {
+      cache.current[prevSession.current] = { result, query, mode };
+      prevSession.current = sessionId;
+
+      const saved = cache.current[sessionId];
+      if (saved) {
+        setResult(saved.result);
+        setQuery(saved.query);
+        setMode(saved.mode);
+      } else {
+        setResult(null);
+        setQuery('');
+        setMode('query');
+      }
+      setError(null);
+      setStartTime('');
+      setEndTime('');
+    }
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleQuerySnippet = async (e) => {
     e.preventDefault();

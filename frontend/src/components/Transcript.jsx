@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { getTranscript } from '../api/videoApi';
 
 function Transcript({ userId, sessionId }) {
@@ -7,9 +7,27 @@ function Transcript({ userId, sessionId }) {
   const [error, setError] = useState(null);
   const [showTimestamps, setShowTimestamps] = useState(true);
 
+  // ── Per-session cache ──
+  const cache = useRef({});
+  const prevSession = useRef(sessionId);
+
   useEffect(() => {
-    loadTranscript();
-  }, [sessionId]);
+    if (prevSession.current !== sessionId) {
+      cache.current[prevSession.current] = transcript;
+      prevSession.current = sessionId;
+
+      const saved = cache.current[sessionId];
+      if (saved) {
+        setTranscript(saved);
+        setError(null);
+      } else {
+        loadTranscript();
+      }
+    } else {
+      // Initial mount
+      loadTranscript();
+    }
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadTranscript = async () => {
     setLoading(true);

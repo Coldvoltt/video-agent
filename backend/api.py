@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict
 from dotenv import load_dotenv
 
@@ -177,6 +177,29 @@ class HelperDocResponse(BaseModel):
     key_points: list
     action_items: list
     markdown: str
+
+
+class PdfExportInput(BaseModel):
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "user_id": "user_123",
+            "session_id": "abc123def456",
+            "selected_sections": ["overview", "key_point_0", "key_point_2", "action_items"],
+            "title": "My Video",
+            "overview": "Overview text...",
+            "key_points": [],
+            "action_items": [],
+        }
+    })
+
+    user_id: str
+    session_id: str
+    selected_sections: list[str]
+    title: str
+    duration: Optional[float] = None
+    overview: str = ""
+    key_points: list = []
+    action_items: list = []
 
 
 # ============================================================
@@ -385,6 +408,118 @@ def download_helper_document(
         media_type="text/markdown",
         filename=f"{session['title']}_helper.md",
     )
+
+
+@app.post("/document/pdf", tags=["2. Helper Documents"])
+def export_helper_document_pdf(
+    input_data: PdfExportInput,
+):
+    """
+    Generate a richly elaborated PDF for selected helper-document sections.
+
+    For each selected section the LLM expands the original summary into
+    detailed, standalone paragraphs.  Multiple screenshots are extracted
+    per key point (evenly spaced across the timestamp range).
+
+    **selected_sections** can include:
+    - `"overview"` — the video overview
+    - `"key_point_0"`, `"key_point_1"`, ... — individual key points by index
+    - `"action_items"` — the action items list
+    """
+    user_id = input_data.user_id
+    session_id = input_data.session_id
+
+    print(f"[PDF] Request received — session={session_id}, sections={input_data.selected_sections}")
+
+    session = db.get_session(session_id, user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        doc = {
+            "title": input_data.title,
+            "duration": input_data.duration,
+            "overview": input_data.overview,
+            "key_points": input_data.key_points,
+            "action_items": input_data.action_items,
+        }
+
+        # 1. LLM elaboration — expand each selected section (concurrent)
+        print("[PDF] Step 1/3: Elaborating sections via LLM...")
+        elaborated = query_handler.elaborate_document_for_pdf(
+            doc, input_data.selected_sections
+        )
+
+        # 2. Extract multiple screenshots per selected key point
+        #    Resolve the frame source once (stream URL or storyboard) then reuse.
+        #    Also checks for cached screenshots from helper doc generation.
+        print("[PDF] Step 2/3: Extracting screenshots...")
+        screenshot_dir = db.get_user_storage_path(user_id, "screenshots")
+        screenshot_paths: dict[int, list[str]] = {}
+
+        frame_source = video_transcriber.resolve_youtube_frame_source(session)
+
+        for i, kp in enumerate(elaborated["key_points"]):
+            if f"key_point_{i}" not in input_data.selected_sections:
+                continue
+
+            ts_start = kp.get("timestamp_start", 0)
+            ts_end = kp.get("timestamp_end", ts_start)
+            paths = []
+
+            # Try extracting new screenshots
+            if frame_source["method"] != "none":
+                paths = video_transcriber.extract_multiple_screenshots(
+                    session=session,
+                    user_id=user_id,
+                    timestamp_start=ts_start,
+                    timestamp_end=ts_end,
+                    session_id=session_id,
+                    n_screenshots=3,
+                    _frame_source=frame_source,
+                )
+
+            # Fallback: use cached screenshot from helper doc generation
+            if not paths:
+                midpoint = int((ts_start + ts_end) / 2)
+                cached_name = f"screenshot_{session_id}_{midpoint}.jpg"
+                cached_path = screenshot_dir / cached_name
+                if cached_path.exists():
+                    paths = [str(cached_path)]
+                    print(f"[PDF]   Key point {i}: using cached screenshot")
+
+            if paths:
+                screenshot_paths[i] = paths
+                print(f"[PDF]   Key point {i}: {len(paths)} screenshot(s)")
+            else:
+                print(f"[PDF]   Key point {i}: no screenshots available")
+
+        # 3. Render PDF
+        print("[PDF] Step 3/3: Rendering PDF...")
+        pdf_bytes = query_handler.generate_helper_document_pdf(
+            doc=elaborated,
+            selected_sections=input_data.selected_sections,
+            screenshot_paths=screenshot_paths,
+        )
+        print(f"[PDF] Done — {len(pdf_bytes)} bytes")
+
+        safe_title = "".join(
+            c if c.isalnum() or c in " _-" else "_" for c in input_data.title
+        ).strip() or "helper_document"
+        filename = f"{safe_title}_helper.pdf"
+
+        return Response(
+            content=bytes(pdf_bytes),
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{__import__('urllib.parse', fromlist=['quote']).quote(filename)}"
+            },
+        )
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/screenshots/{user_id}/{filename}", tags=["2. Helper Documents"])

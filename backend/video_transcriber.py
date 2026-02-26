@@ -602,22 +602,68 @@ def _get_ffmpeg_binary() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
+class _YtdlpSilentLogger:
+    """Swallow yt-dlp's internal ERROR/WARNING logs that leak to stderr."""
+    def debug(self, msg): pass
+    def warning(self, msg): pass
+    def error(self, msg): pass
+
+
 def _get_youtube_stream_url(video_url: str) -> str:
     """
     Get direct video stream URL from YouTube using yt-dlp.
 
-    Uses format 18 (360p progressive MP4 over HTTPS) which works with
-    plain ffmpeg without requiring authentication headers. This format
-    is available on virtually all YouTube videos.
+    Tries browser cookies then falls back to no auth.
+    Raises RuntimeError on failure.
+    """
+    import yt_dlp
+    import platform
 
-    Args:
-        video_url: YouTube video URL
+    base_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "format": "18",  # 360p progressive MP4, works with plain ffmpeg
+        "logger": _YtdlpSilentLogger(),
+    }
 
-    Returns:
-        Direct stream URL
+    strategies: list[dict] = []
+    if platform.system() == "Windows":
+        strategies += [{"cookiesfrombrowser": ("edge",)}, {"cookiesfrombrowser": ("chrome",)}]
+    else:
+        strategies += [{"cookiesfrombrowser": ("chrome",)}, {"cookiesfrombrowser": ("firefox",)}]
+    strategies.append({})  # no auth
 
-    Raises:
-        RuntimeError: If yt-dlp cannot resolve the stream URL
+    last_err = None
+    for auth in strategies:
+        opts = {**base_opts, **auth}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(video_url, download=False)
+                url = info.get("url")
+                if url:
+                    return url
+        except Exception as e:
+            last_err = e
+            err_str = str(e).lower()
+            if "sign in" in err_str or "bot" in err_str or "confirm" in err_str:
+                break
+            continue
+
+    raise RuntimeError(f"Stream URL resolution failed: {last_err}")
+
+
+# ---- YouTube storyboard (sprite-sheet) fallback ----
+
+def _get_youtube_storyboard_spec(video_url: str) -> dict | None:
+    """
+    Extract storyboard metadata from YouTube.
+
+    This calls extract_info *without* requesting a playable format, so it
+    succeeds even when YouTube bot-detection blocks stream URLs.
+
+    Returns a dict with keys: columns, rows, width, height, fragments
+    (each fragment has 'url' and 'duration'), or None if unavailable.
     """
     import yt_dlp
 
@@ -625,18 +671,111 @@ def _get_youtube_stream_url(video_url: str) -> str:
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "format": "18",  # 360p progressive MP4 - no auth headers needed
+        "logger": _YtdlpSilentLogger(),
     }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-            stream_url = info.get("url")
-            if not stream_url:
-                raise RuntimeError("Could not resolve video stream URL")
-            return stream_url
-    except Exception as e:
-        raise RuntimeError(f"Failed to get YouTube stream URL: {e}")
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(video_url, download=False)
+
+    # yt-dlp exposes storyboards as formats with format_note == "storyboard"
+    storyboards = [
+        f for f in info.get("formats", [])
+        if "storyboard" in (f.get("format_note") or "").lower()
+    ]
+    if not storyboards:
+        return None
+
+    # Pick the highest-resolution storyboard
+    best = max(storyboards, key=lambda s: (s.get("width", 0), s.get("height", 0)))
+    fragments = best.get("fragments") or []
+    if not fragments:
+        return None
+
+    return {
+        "columns": best.get("columns", 10),
+        "rows": best.get("rows", 10),
+        "width": best.get("width", 160),
+        "height": best.get("height", 90),
+        "fragments": fragments,
+    }
+
+
+def _extract_frame_from_storyboard(
+    sb: dict, timestamp: float, output_path: str
+) -> str:
+    """
+    Crop a single frame out of a YouTube storyboard sprite-sheet.
+
+    Args:
+        sb: storyboard spec from _get_youtube_storyboard_spec()
+        timestamp: desired time in seconds
+        output_path: where to write the JPEG
+
+    Returns:
+        output_path on success
+
+    Raises:
+        RuntimeError on failure
+    """
+    from PIL import Image
+    import io
+    import urllib.request
+
+    cols = sb["columns"]
+    rows = sb["rows"]
+    thumb_w = sb["width"]
+    thumb_h = sb["height"]
+    fragments = sb["fragments"]
+    frames_per_sheet = cols * rows
+
+    # Find which fragment covers the requested timestamp
+    accumulated = 0.0
+    target_frag = None
+    frag_start = 0.0
+    for frag in fragments:
+        frag_dur = frag.get("duration", 0)
+        if accumulated + frag_dur > timestamp or frag is fragments[-1]:
+            target_frag = frag
+            frag_start = accumulated
+            break
+        accumulated += frag_dur
+
+    if not target_frag or "url" not in target_frag:
+        raise RuntimeError("Could not locate storyboard fragment for timestamp")
+
+    # Which cell inside this sprite sheet?
+    frag_dur = target_frag.get("duration", 1)
+    time_into_frag = max(0, timestamp - frag_start)
+    frame_interval = frag_dur / frames_per_sheet if frames_per_sheet else 1
+    frame_index = min(int(time_into_frag / frame_interval), frames_per_sheet - 1)
+    col_idx = frame_index % cols
+    row_idx = frame_index // cols
+
+    # Download the sprite sheet
+    req = urllib.request.Request(
+        target_frag["url"],
+        headers={"User-Agent": "Mozilla/5.0"},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        sheet_data = resp.read()
+
+    sheet = Image.open(io.BytesIO(sheet_data))
+    left = col_idx * thumb_w
+    top = row_idx * thumb_h
+    frame = sheet.crop((left, top, left + thumb_w, top + thumb_h))
+
+    # Up-scale small thumbnails so they look reasonable in the PDF / UI
+    MIN_WIDTH = 640
+    if frame.width < MIN_WIDTH:
+        scale = MIN_WIDTH / frame.width
+        frame = frame.resize(
+            (int(frame.width * scale), int(frame.height * scale)),
+            Image.LANCZOS,
+        )
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    frame.save(output_path, "JPEG", quality=85)
+    return output_path
 
 
 def _extract_frame_with_ffmpeg(input_path: str, timestamp: float, output_path: str) -> str:
@@ -727,6 +866,141 @@ def extract_frame_local(video_path: str, timestamp: float, output_path: str) -> 
     return _extract_frame_with_ffmpeg(video_path, timestamp, output_path)
 
 
+def extract_multiple_screenshots(
+    session: dict,
+    user_id: str,
+    timestamp_start: float,
+    timestamp_end: float,
+    session_id: str,
+    n_screenshots: int = 3,
+    _frame_source: dict | None = None,
+) -> list[str]:
+    """
+    Extract multiple evenly-spaced screenshots across a time range.
+
+    Returns a list of on-disk file paths for each successfully extracted frame.
+    Screenshots are cached — repeated calls with the same timestamps are free.
+
+    Pass ``_frame_source`` (from resolve_youtube_frame_source) to reuse
+    a previously resolved extraction method.
+    """
+    import database as db
+
+    source = session.get("source", "")
+    frame_source = _frame_source or resolve_youtube_frame_source(session)
+    method = frame_source["method"]
+
+    if method == "none":
+        return []
+
+    # For stream / local methods we need ffmpeg
+    if method in ("stream", "local"):
+        try:
+            _get_ffmpeg_binary()
+        except Exception:
+            # If ffmpeg unavailable but storyboard exists, switch method
+            if source == "youtube":
+                try:
+                    sb = _get_youtube_storyboard_spec(session["video_url"])
+                    if sb:
+                        frame_source = {"method": "storyboard", "storyboard": sb}
+                        method = "storyboard"
+                except Exception:
+                    return []
+            else:
+                return []
+
+    duration = timestamp_end - timestamp_start
+    if duration < 1:
+        n_screenshots = 1
+
+    # Compute evenly-spaced timestamps (avoid the very edges)
+    if n_screenshots == 1:
+        timestamps = [(timestamp_start + timestamp_end) / 2]
+    else:
+        margin = duration * 0.05
+        safe_start = timestamp_start + margin
+        safe_end = timestamp_end - margin
+        step = (safe_end - safe_start) / (n_screenshots - 1) if n_screenshots > 1 else 0
+        timestamps = [safe_start + step * i for i in range(n_screenshots)]
+
+    paths: list[str] = []
+    for ts in timestamps:
+        try:
+            filename = f"screenshot_{session_id}_{int(ts * 10)}.jpg"
+            file_path = db.get_user_screenshot_path(user_id, filename)
+
+            if not file_path.exists():
+                if method == "stream":
+                    _extract_frame_with_ffmpeg(
+                        frame_source["stream_url"], ts, str(file_path)
+                    )
+                elif method == "storyboard":
+                    _extract_frame_from_storyboard(
+                        frame_source["storyboard"], ts, str(file_path)
+                    )
+                elif method == "local" and session.get("video_path"):
+                    extract_frame_local(
+                        session["video_path"], ts, str(file_path)
+                    )
+                else:
+                    continue
+
+            paths.append(str(file_path))
+        except Exception as e:
+            print(f"[Screenshots] Multi-screenshot failed at {ts:.1f}s: {e}")
+
+    return paths
+
+
+def resolve_youtube_frame_source(session: dict) -> dict:
+    """
+    Resolve the best method to extract frames from a YouTube video.
+
+    Returns a dict describing the available method:
+      {"method": "stream", "stream_url": "..."}   — ffmpeg from stream URL
+      {"method": "storyboard", "storyboard": {...}} — crop from sprite sheets
+      {"method": "none"}                           — nothing available
+
+    For local videos returns {"method": "local"}.
+    """
+    if session.get("source") != "youtube" or not session.get("video_url"):
+        if session.get("source") == "local":
+            return {"method": "local"}
+        return {"method": "none"}
+
+    video_url = session["video_url"]
+
+    # Try 1: direct stream URL (highest quality)
+    try:
+        url = _get_youtube_stream_url(video_url)
+        print("[Screenshots] Using stream URL (high-res frames)")
+        return {"method": "stream", "stream_url": url}
+    except Exception as e:
+        print(f"[Screenshots] Stream URL failed: {e}")
+
+    # Try 2: storyboard sprite sheets (no auth needed, always works)
+    try:
+        sb = _get_youtube_storyboard_spec(video_url)
+        if sb:
+            print(f"[Screenshots] Using storyboard fallback "
+                  f"({sb['width']}x{sb['height']} thumbnails, "
+                  f"{len(sb['fragments'])} sheets)")
+            return {"method": "storyboard", "storyboard": sb}
+    except Exception as e:
+        print(f"[Screenshots] Storyboard fallback also failed: {e}")
+
+    print("[Screenshots] No frame extraction method available")
+    return {"method": "none"}
+
+
+# Keep backwards-compatible alias used by api.py
+def resolve_stream_url(session: dict) -> str | None:
+    """Legacy wrapper — returns stream URL or None."""
+    source = resolve_youtube_frame_source(session)
+    return source.get("stream_url")
+
+
 def extract_screenshots_for_key_points(
     key_points: list,
     session: dict,
@@ -736,9 +1010,12 @@ def extract_screenshots_for_key_points(
     """
     Extract screenshots for each key point and add screenshot_url to each.
 
-    For each key point, checks if a cached screenshot exists on disk.
-    If not, extracts the frame at timestamp_start. Failures for individual
-    key points are silently handled (screenshot_url set to None).
+    Tries the best available method in order:
+      1. ffmpeg from YouTube stream URL (highest quality)
+      2. YouTube storyboard sprite sheets (no auth needed — always works)
+      3. ffmpeg from local video file
+
+    Cached screenshots are reused automatically.
 
     Args:
         key_points: List of key point dicts with timestamp_start
@@ -751,32 +1028,27 @@ def extract_screenshots_for_key_points(
     """
     import database as db
 
-    # Verify ffmpeg is available via imageio-ffmpeg
-    try:
-        _get_ffmpeg_binary()
-    except Exception:
-        print("Warning: ffmpeg binary not available. Skipping screenshot extraction.")
-        for kp in key_points:
-            kp["screenshot_url"] = None
-        return key_points
-
     session_id = session["id"]
     source = session.get("source", "")
 
-    # For YouTube, get stream URL once and reuse for all key points
-    stream_url = None
-    if source == "youtube" and session.get("video_url"):
+    # Resolve the frame extraction method once for all key points
+    frame_source = resolve_youtube_frame_source(session)
+
+    # For local videos we still need ffmpeg
+    if source == "local":
         try:
-            stream_url = _get_youtube_stream_url(session["video_url"])
-        except Exception as e:
-            print(f"Warning: Could not get YouTube stream URL: {e}")
+            _get_ffmpeg_binary()
+        except Exception:
+            print("[Screenshots] ffmpeg not available, skipping extraction")
             for kp in key_points:
                 kp["screenshot_url"] = None
             return key_points
 
     for kp in key_points:
         try:
-            timestamp = kp.get("timestamp_start", 0)
+            ts_start = kp.get("timestamp_start", 0)
+            ts_end = kp.get("timestamp_end", ts_start)
+            timestamp = (ts_start + ts_end) / 2
             filename = f"screenshot_{session_id}_{int(timestamp)}.jpg"
             file_path = db.get_user_screenshot_path(user_id, filename)
 
@@ -785,11 +1057,20 @@ def extract_screenshots_for_key_points(
                 kp["screenshot_url"] = f"{base_url}/screenshots/{user_id}/{filename}"
                 continue
 
-            # Extract frame based on source type
-            if source == "youtube" and stream_url:
-                _extract_frame_with_ffmpeg(stream_url, timestamp, str(file_path))
-            elif source == "local" and session.get("video_path"):
-                extract_frame_local(session["video_path"], timestamp, str(file_path))
+            # Extract frame using the best available method
+            method = frame_source["method"]
+            if method == "stream":
+                _extract_frame_with_ffmpeg(
+                    frame_source["stream_url"], timestamp, str(file_path)
+                )
+            elif method == "storyboard":
+                _extract_frame_from_storyboard(
+                    frame_source["storyboard"], timestamp, str(file_path)
+                )
+            elif method == "local" and session.get("video_path"):
+                extract_frame_local(
+                    session["video_path"], timestamp, str(file_path)
+                )
             else:
                 kp["screenshot_url"] = None
                 continue
@@ -797,7 +1078,7 @@ def extract_screenshots_for_key_points(
             kp["screenshot_url"] = f"{base_url}/screenshots/{user_id}/{filename}"
 
         except Exception as e:
-            print(f"Warning: Failed to extract screenshot at {kp.get('timestamp_start', '?')}s: {e}")
+            print(f"[Screenshots] Failed at {kp.get('timestamp_start', '?')}s: {e}")
             kp["screenshot_url"] = None
 
     return key_points

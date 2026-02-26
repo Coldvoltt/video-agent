@@ -55,6 +55,27 @@ export const getHelperDocument = async (sessionId, userId) => {
   return response.data;
 };
 
+// PDF Export
+export const exportHelperDocumentPdf = async (userId, sessionId, doc, selectedSections) => {
+  const payload = {
+    user_id: userId,
+    session_id: sessionId,
+    selected_sections: selectedSections,
+    title: doc.title,
+    duration: doc.duration || null,
+    overview: doc.overview,
+    key_points: doc.key_points,
+    action_items: doc.action_items,
+  };
+  console.log('[PDF API] POST /document/pdf payload:', JSON.stringify(payload).slice(0, 500));
+  const response = await api.post('/document/pdf', payload, {
+    responseType: 'blob',
+    timeout: 600000,
+  });
+  console.log('[PDF API] Response status:', response.status);
+  return response.data;
+};
+
 // Search & Query
 export const searchVideo = async (userId, sessionId, query, nResults = 5) => {
   const response = await api.post('/search', {

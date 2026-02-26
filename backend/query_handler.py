@@ -5,8 +5,10 @@ Handles: understanding user intent, generating responses, creating helper docume
 
 import os
 import json
+from pathlib import Path
 
 from openai import OpenAI
+from fpdf import FPDF
 
 import rag_engine
 
@@ -345,3 +347,347 @@ def _format_duration(seconds: float) -> str:
     if hours > 0:
         return f"{hours}h {minutes}m {secs}s"
     return f"{minutes}m {secs}s"
+
+
+def _sanitize_for_pdf(text: str) -> str:
+    """Replace characters outside latin-1 range for built-in PDF fonts."""
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
+# ----------------------------------------------------------------
+# PDF elaboration — LLM expands each section into rich content
+# ----------------------------------------------------------------
+
+def _elaborate_overview(title: str, overview: str) -> str:
+    """Ask the LLM to expand a brief overview into 4-6 detailed paragraphs."""
+    response = client.chat.completions.create(
+        model=GPT_MODEL,
+        messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "You are writing a professional PDF report about a video. "
+                    "Expand the overview below into a rich, detailed 4-6 paragraph summary. "
+                    "Use your knowledge to add helpful context, explain terminology, "
+                    "and make the section informative even for readers who haven't watched the video. "
+                    "Return plain text only — no markdown formatting."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Video title: {title}\n\nOriginal overview:\n{overview}",
+            },
+        ],
+    )
+    return response.choices[0].message.content
+
+
+def _elaborate_key_point(title: str, video_title: str, summary: str) -> str:
+    """Ask the LLM to expand a key-point summary into a detailed section."""
+    response = client.chat.completions.create(
+        model=GPT_MODEL,
+        messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "You are writing a section of a professional PDF report about a video. "
+                    "Expand the key-point summary below into 3-5 detailed paragraphs. "
+                    "Explain concepts in depth, provide background context from your own knowledge, "
+                    "give examples where helpful, and make the section valuable as a standalone read. "
+                    "Return plain text only — no markdown formatting."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Video: {video_title}\n"
+                    f"Section title: {title}\n\n"
+                    f"Original summary:\n{summary}"
+                ),
+            },
+        ],
+    )
+    return response.choices[0].message.content
+
+
+def _elaborate_action_items(title: str, action_items: list[str]) -> list[str]:
+    """Ask the LLM to expand terse action items into detailed descriptions."""
+    items_text = "\n".join(f"- {item}" for item in action_items)
+    response = client.chat.completions.create(
+        model=GPT_MODEL,
+        messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "You are writing the action-items section of a professional PDF report. "
+                    "For each action item below, expand it into 2-3 sentences that explain "
+                    "what to do, why it matters, and any helpful tips. "
+                    "Return a JSON object: {\"items\": [\"expanded item 1\", ...]}. "
+                    "Keep the same order and count."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Video: {title}\n\nAction items:\n{items_text}",
+            },
+        ],
+        response_format={"type": "json_object"},
+    )
+    result = json.loads(response.choices[0].message.content)
+    return result.get("items", action_items)
+
+
+def elaborate_document_for_pdf(
+    doc: dict,
+    selected_sections: list[str],
+) -> dict:
+    """
+    Call the LLM to elaborate every selected section of a helper document.
+
+    All LLM calls run concurrently to minimize total latency.
+    Returns a new doc dict with elaborated text replacing the originals.
+    Only selected sections are elaborated (saves tokens).
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    elaborated = {
+        "title": doc["title"],
+        "duration": doc.get("duration"),
+        "overview": doc.get("overview", ""),
+        "key_points": [dict(kp) for kp in doc.get("key_points", [])],
+        "action_items": list(doc.get("action_items", [])),
+    }
+
+    video_title = doc["title"]
+    futures = {}
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        # Overview
+        if "overview" in selected_sections and elaborated["overview"]:
+            print("[PDF] Elaborating overview...")
+            futures[pool.submit(_elaborate_overview, video_title, elaborated["overview"])] = "overview"
+
+        # Key points
+        for i, kp in enumerate(elaborated["key_points"]):
+            if f"key_point_{i}" in selected_sections and kp.get("summary"):
+                print(f"[PDF] Elaborating key point {i}: {kp.get('title', '')}")
+                futures[pool.submit(
+                    _elaborate_key_point, kp.get("title", ""), video_title, kp["summary"]
+                )] = ("key_point", i)
+
+        # Action items
+        if "action_items" in selected_sections and elaborated["action_items"]:
+            print("[PDF] Elaborating action items...")
+            futures[pool.submit(
+                _elaborate_action_items, video_title, elaborated["action_items"]
+            )] = "action_items"
+
+        # Collect results as they complete
+        for future in as_completed(futures):
+            tag = futures[future]
+            try:
+                result = future.result()
+                if tag == "overview":
+                    elaborated["overview"] = result
+                    print("[PDF] Overview elaboration done")
+                elif isinstance(tag, tuple) and tag[0] == "key_point":
+                    idx = tag[1]
+                    elaborated["key_points"][idx]["elaborated_summary"] = result
+                    print(f"[PDF] Key point {idx} elaboration done")
+                elif tag == "action_items":
+                    elaborated["action_items"] = result
+                    print("[PDF] Action items elaboration done")
+            except Exception as e:
+                print(f"[PDF] Elaboration failed for {tag}: {e}")
+
+    print("[PDF] All elaborations complete")
+    return elaborated
+
+
+# ----------------------------------------------------------------
+# PDF rendering
+# ----------------------------------------------------------------
+
+def _pdf_embed_image(pdf: "FPDF", img_path: str):
+    """Embed a single image left-aligned with text, respecting page breaks."""
+    from PIL import Image as PILImage
+
+    with PILImage.open(img_path) as pil_img:
+        iw, ih = pil_img.size
+    rendered_w = pdf.epw  # full text width
+    rendered_h = rendered_w * (ih / iw)
+
+    # If the image won't fit on the current page, start a new one
+    space_left = pdf.h - pdf.get_y() - pdf.b_margin
+    if rendered_h > space_left:
+        pdf.add_page()
+
+    pdf.image(img_path, x=pdf.l_margin, w=rendered_w)
+    pdf.ln(4)
+
+
+def generate_helper_document_pdf(
+    doc: dict,
+    selected_sections: list[str],
+    screenshot_paths: dict[int, list[str]] | None = None,
+) -> bytes:
+    """
+    Generate a formatted PDF for selected sections of a helper document.
+
+    Screenshots are interspersed between paragraphs of text so they
+    appear at contextually relevant positions in the report.
+
+    Args:
+        doc: Elaborated helper document dict
+        selected_sections: List of section IDs to include.
+        screenshot_paths: Mapping of key-point index -> list of on-disk
+            screenshot file paths to embed in the PDF.
+
+    Returns:
+        PDF file contents as bytes
+    """
+    s = _sanitize_for_pdf
+    screenshot_paths = screenshot_paths or {}
+
+    # Dark grey used for all body text
+    BODY_COLOR = (75, 75, 75)
+    HEADING_COLOR = (50, 50, 50)
+    ACCENT_COLOR = (99, 102, 241)
+    MUTED_COLOR = (140, 140, 140)
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_left_margin(20)
+    pdf.set_right_margin(20)
+    pdf.add_page()
+
+    page_w = pdf.epw
+
+    # ── Title ──
+    pdf.set_font("Helvetica", "B", 20)
+    pdf.set_text_color(*ACCENT_COLOR)
+    pdf.multi_cell(0, 10, s(doc.get("title", "Helper Document")),
+                   new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
+
+    if doc.get("duration"):
+        pdf.set_font("Helvetica", "", 9)
+        pdf.set_text_color(*MUTED_COLOR)
+        pdf.cell(0, 5, f"Duration: {_format_duration(doc['duration'])}",
+                 new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(3)
+
+    # Divider
+    y = pdf.get_y()
+    pdf.set_draw_color(210, 210, 210)
+    pdf.line(pdf.l_margin, y, pdf.l_margin + page_w, y)
+    pdf.ln(8)
+
+    # ── Overview ──
+    if "overview" in selected_sections and doc.get("overview"):
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.set_text_color(*HEADING_COLOR)
+        pdf.cell(0, 9, "Overview", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(3)
+
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(*BODY_COLOR)
+        for para in doc["overview"].split("\n\n"):
+            para = para.strip()
+            if para:
+                pdf.multi_cell(0, 5.5, s(para))
+                pdf.ln(3)
+        pdf.ln(4)
+
+    # ── Key Points ──
+    key_points = doc.get("key_points", [])
+    has_key_points = any(
+        f"key_point_{i}" in selected_sections for i in range(len(key_points))
+    )
+
+    if has_key_points:
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.set_text_color(*HEADING_COLOR)
+        pdf.cell(0, 9, "Key Points", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(5)
+
+        for i, kp in enumerate(key_points):
+            if f"key_point_{i}" not in selected_sections:
+                continue
+
+            # Key point title with background bar
+            y_title = pdf.get_y()
+            pdf.set_fill_color(245, 245, 250)
+            pdf.rect(pdf.l_margin, y_title, page_w, 9, style="F")
+
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_text_color(*HEADING_COLOR)
+            pdf.set_xy(pdf.l_margin + 3, y_title + 1)
+            pdf.cell(0, 7, s(f"{i + 1}.  {kp.get('title', '')}"),
+                     new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(4)
+
+            # ── Interleave text paragraphs and screenshots ──
+            text = kp.get("elaborated_summary", kp.get("summary", ""))
+            paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+            if len(paragraphs) <= 1 and len(text) > 600:
+                paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+
+            img_paths = screenshot_paths.get(i, [])
+
+            if not paragraphs:
+                for img_p in img_paths:
+                    try:
+                        _pdf_embed_image(pdf, img_p)
+                    except Exception as e:
+                        print(f"[PDF] Warning: failed to embed {img_p}: {e}")
+            elif not img_paths:
+                pdf.set_font("Helvetica", "", 10)
+                pdf.set_text_color(*BODY_COLOR)
+                for para in paragraphs:
+                    pdf.multi_cell(0, 5.5, s(para))
+                    pdf.ln(3)
+            else:
+                n_imgs = len(img_paths)
+                n_paras = len(paragraphs)
+                insert_after: dict[int, list[str]] = {}
+                for img_idx in range(n_imgs):
+                    para_idx = int((img_idx + 1) * n_paras / (n_imgs + 1))
+                    para_idx = min(para_idx, n_paras - 1)
+                    insert_after.setdefault(para_idx, []).append(img_paths[img_idx])
+
+                pdf.set_font("Helvetica", "", 10)
+                pdf.set_text_color(*BODY_COLOR)
+                for p_idx, para in enumerate(paragraphs):
+                    pdf.multi_cell(0, 5.5, s(para))
+                    pdf.ln(3)
+
+                    for img_p in insert_after.get(p_idx, []):
+                        try:
+                            _pdf_embed_image(pdf, img_p)
+                        except Exception as e:
+                            print(f"[PDF] Warning: failed to embed {img_p}: {e}")
+
+            pdf.ln(4)
+
+    # ── Action Items ──
+    if "action_items" in selected_sections and doc.get("action_items"):
+        y = pdf.get_y()
+        pdf.set_draw_color(210, 210, 210)
+        pdf.line(pdf.l_margin, y, pdf.l_margin + page_w, y)
+        pdf.ln(6)
+
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.set_text_color(*HEADING_COLOR)
+        pdf.cell(0, 9, "Action Items", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(3)
+
+        for idx, item in enumerate(doc["action_items"]):
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.set_text_color(*BODY_COLOR)
+            pdf.cell(8, 5.5, f"{idx + 1}.")
+            pdf.set_font("Helvetica", "", 10)
+            pdf.multi_cell(0, 5.5, s(item))
+            pdf.ln(2)
+
+    return pdf.output()

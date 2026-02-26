@@ -23,12 +23,33 @@ function ChatInterface({ userId, sessionId }) {
 
   const [conversationId, setConversationId] = useState(() => getConversationId());
 
-  // Load conversation history when session changes
+  // ── Per-session cache ──
+  const cache = useRef({});
+  const prevSession = useRef(sessionId);
+
   useEffect(() => {
-    const newConvId = getConversationId();
-    setConversationId(newConvId);
-    loadConversationHistory(newConvId);
-  }, [sessionId, userId]);
+    if (prevSession.current !== sessionId) {
+      // Save old session state
+      cache.current[prevSession.current] = { messages, conversationId };
+      prevSession.current = sessionId;
+
+      // Restore or load fresh
+      const saved = cache.current[sessionId];
+      if (saved) {
+        setMessages(saved.messages);
+        setConversationId(saved.conversationId);
+      } else {
+        const newConvId = getConversationId();
+        setConversationId(newConvId);
+        loadConversationHistory(newConvId);
+      }
+    }
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Initial load on mount
+  useEffect(() => {
+    loadConversationHistory(conversationId);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadConversationHistory = async (convId) => {
     setLoadingHistory(true);
