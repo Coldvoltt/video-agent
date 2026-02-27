@@ -76,6 +76,23 @@ export const exportHelperDocumentPdf = async (userId, sessionId, doc, selectedSe
   return response.data;
 };
 
+// How-To Guides
+export const getHowToGuides = async (sessionId, userId) => {
+  const response = await api.get(`/howto/${sessionId}`, {
+    params: { user_id: userId },
+  });
+  return response.data;
+};
+
+export const getCustomHowToGuide = async (userId, sessionId, query) => {
+  const response = await api.post('/howto/custom', {
+    user_id: userId,
+    session_id: sessionId,
+    query,
+  });
+  return response.data;
+};
+
 // Search & Query
 export const searchVideo = async (userId, sessionId, query, nResults = 5) => {
   const response = await api.post('/search', {

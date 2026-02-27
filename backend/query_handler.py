@@ -322,6 +322,119 @@ Return JSON: {"key_points": [{"title": "...", "summary": "..."}]}""",
     return result.get("key_points", [])
 
 
+def generate_howto_guides(transcript: dict, video_title: str) -> list[dict]:
+    """
+    Extract step-by-step how-to guides from a video transcript.
+
+    Returns a list of guides, each with title, description, steps, and timestamps.
+    """
+    formatted = _format_transcript_with_timestamps(transcript)
+
+    if len(formatted) > 200000:
+        formatted = formatted[:200000] + "\n...[truncated]"
+
+    system_prompt = """You are an expert at analyzing video content and extracting actionable how-to guides.
+From the transcript, identify 3-10 distinct how-to guides — practical, step-by-step procedures
+that a viewer could follow.
+
+Respond with JSON:
+{
+    "guides": [
+        {
+            "title": "How to <do something>",
+            "description": "Brief 1-2 sentence summary of what this guide covers",
+            "steps": [
+                {
+                    "step_number": 1,
+                    "instruction": "Short imperative instruction (e.g. 'Open the settings panel')",
+                    "detail": "Optional extra detail or explanation (1-2 sentences)",
+                    "timestamp": <approximate timestamp in seconds where this step is discussed>
+                }
+            ],
+            "timestamp_start": <start time in seconds>,
+            "timestamp_end": <end time in seconds>
+        }
+    ]
+}
+
+Rules:
+- Each guide must have at least 2 steps
+- Instructions should be clear and actionable
+- Only extract guides that are genuinely taught or demonstrated in the video
+- Order guides by their appearance in the video
+- If the video has fewer than 3 extractable guides, return fewer"""
+
+    response = client.chat.completions.create(
+        model=GPT_MODEL,
+        messages=[
+            {"role": "developer", "content": system_prompt},
+            {
+                "role": "user",
+                "content": f"Video: {video_title}\nDuration: {transcript['duration']:.0f}s\n\nTranscript:\n{formatted}",
+            },
+        ],
+        response_format={"type": "json_object"},
+    )
+
+    result = json.loads(response.choices[0].message.content)
+    return result.get("guides", [])
+
+
+def generate_custom_howto(transcript: dict, video_title: str, user_query: str) -> dict:
+    """
+    Generate a single how-to guide from a user's natural language query.
+
+    Returns a guide dict with confidence level and optional note.
+    """
+    formatted = _format_transcript_with_timestamps(transcript)
+
+    if len(formatted) > 200000:
+        formatted = formatted[:200000] + "\n...[truncated]"
+
+    system_prompt = """You are an expert at analyzing video content and creating how-to guides.
+The user wants a specific how-to guide based on the video transcript.
+
+Respond with JSON:
+{
+    "guide": {
+        "title": "How to <topic>",
+        "description": "Brief summary of what this guide covers",
+        "steps": [
+            {
+                "step_number": 1,
+                "instruction": "Short imperative instruction",
+                "detail": "Optional extra detail (1-2 sentences)",
+                "timestamp": <timestamp in seconds or null>
+            }
+        ],
+        "timestamp_start": <start time in seconds or null>,
+        "timestamp_end": <end time in seconds or null>
+    },
+    "confidence": "high" | "medium" | "low",
+    "note": "Optional note if the topic is only partially covered or not found"
+}
+
+Rules:
+- If the topic IS covered in the video, extract accurate steps with timestamps
+- If partially covered, do your best and set confidence to "medium" with a note
+- If NOT covered at all, return an empty steps array, confidence "low", and a helpful note
+- Instructions should be clear and actionable"""
+
+    response = client.chat.completions.create(
+        model=GPT_MODEL,
+        messages=[
+            {"role": "developer", "content": system_prompt},
+            {
+                "role": "user",
+                "content": f"Video: {video_title}\nDuration: {transcript['duration']:.0f}s\n\nUser query: {user_query}\n\nTranscript:\n{formatted}",
+            },
+        ],
+        response_format={"type": "json_object"},
+    )
+
+    return json.loads(response.choices[0].message.content)
+
+
 def _format_transcript_with_timestamps(transcript: dict) -> str:
     """Format transcript with timestamps for LLM."""
     lines = []

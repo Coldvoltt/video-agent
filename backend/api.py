@@ -33,6 +33,10 @@ tags_metadata = [
         "description": "Generate AI-powered summary documents with **key points**, **timestamps**, and **action items**.",
     },
     {
+        "name": "2b. How-To Guides",
+        "description": "Extract step-by-step how-to guides from the video transcript, or request custom guides.",
+    },
+    {
         "name": "3. Search & Query",
         "description": "Search the transcript or ask natural language questions. Queries require `user_id`, `session_id`, and `conversation_id`.",
     },
@@ -177,6 +181,46 @@ class HelperDocResponse(BaseModel):
     key_points: list
     action_items: list
     markdown: str
+
+
+class HowToStep(BaseModel):
+    step_number: int
+    instruction: str
+    detail: str = ""
+    timestamp: Optional[float] = None
+
+
+class HowToGuide(BaseModel):
+    title: str
+    description: str
+    steps: list[HowToStep]
+    timestamp_start: Optional[float] = None
+    timestamp_end: Optional[float] = None
+
+
+class HowToGuidesResponse(BaseModel):
+    session_id: str
+    guides: list[HowToGuide]
+
+
+class CustomHowToInput(BaseModel):
+    model_config = ConfigDict(json_schema_extra={
+        "example": {
+            "user_id": "user_123",
+            "session_id": "abc123def456",
+            "query": "How do I set up the development environment?"
+        }
+    })
+
+    user_id: str
+    session_id: str
+    query: str
+
+
+class CustomHowToResponse(BaseModel):
+    guide: HowToGuide
+    confidence: str
+    note: Optional[str] = None
 
 
 class PdfExportInput(BaseModel):
@@ -539,6 +583,62 @@ def get_screenshot(user_id: str, filename: str):
         media_type="image/jpeg",
         filename=filename,
     )
+
+
+# ============================================================
+# 2b. HOW-TO GUIDES
+# ============================================================
+
+@app.get("/howto/{session_id}", response_model=HowToGuidesResponse, tags=["2b. How-To Guides"])
+def get_howto_guides(
+    session_id: str,
+    user_id: str = Query(..., description="Your unique user identifier"),
+):
+    """
+    Generate step-by-step how-to guides from the video transcript.
+
+    Extracts 3-10 actionable guides with numbered steps and timestamps.
+    """
+    session = db.get_session(session_id, user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        guides = query_handler.generate_howto_guides(
+            session["transcript"],
+            session["title"],
+        )
+        return HowToGuidesResponse(session_id=session_id, guides=guides)
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/howto/custom", response_model=CustomHowToResponse, tags=["2b. How-To Guides"])
+def get_custom_howto(input_data: CustomHowToInput):
+    """
+    Generate a custom how-to guide from a user's natural language query.
+
+    Returns a single guide with confidence level and optional note.
+    """
+    session = db.get_session(input_data.session_id, input_data.user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    try:
+        result = query_handler.generate_custom_howto(
+            session["transcript"],
+            session["title"],
+            input_data.query,
+        )
+        return CustomHowToResponse(
+            guide=result["guide"],
+            confidence=result.get("confidence", "medium"),
+            note=result.get("note"),
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================

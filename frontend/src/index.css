@@ -1545,3 +1545,216 @@ input[type="checkbox"] {
   padding-top: 8px;
   border-top: 1px solid var(--border-subtle);
 }
+
+/* ============================================
+   How-To Guides — Accordion
+   ============================================ */
+.howto-custom-form {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.howto-custom-form input {
+  flex: 1;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text-primary);
+  transition: all var(--transition-normal);
+}
+
+.howto-custom-form input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px var(--accent-light);
+}
+
+.howto-accordion {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition-normal);
+}
+
+.howto-accordion:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.howto-accordion-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: background var(--transition-fast);
+}
+
+.howto-accordion-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.howto-accordion-header-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.howto-accordion-header-content h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.howto-accordion-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.howto-accordion-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 4px 0 0;
+  line-height: 1.4;
+}
+
+.howto-accordion-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.howto-accordion-time {
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--accent-primary);
+}
+
+.howto-chevron {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform var(--transition-normal);
+}
+
+.howto-chevron-open {
+  transform: rotate(180deg);
+}
+
+.howto-accordion-body {
+  padding: 0 20px 20px;
+  border-top: 1px solid var(--border-subtle);
+  animation: fadeIn 0.2s ease-out;
+}
+
+.howto-steps {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+}
+
+.howto-step {
+  display: flex;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.howto-step:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.howto-step-number {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-light);
+  color: var(--accent-primary);
+  font-size: 13px;
+  font-weight: 700;
+  border-radius: 50%;
+}
+
+.howto-step-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.howto-step-instruction {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.howto-step-detail {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.howto-step-timestamp {
+  display: inline-block;
+  margin-top: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--accent-primary);
+  background: var(--accent-light);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.howto-custom-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 10px;
+  background: rgba(139, 92, 246, 0.1);
+  color: var(--accent-secondary);
+}
+
+.howto-confidence {
+  font-weight: 500;
+}
+
+.howto-confidence-high {
+  color: var(--success);
+}
+
+.howto-confidence-medium {
+  color: var(--warning);
+}
+
+.howto-confidence-low {
+  color: var(--error);
+}
+
+.howto-note {
+  margin-top: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--accent-light);
+  border-left: 3px solid var(--accent-primary);
+  border-radius: var(--radius-sm);
+}

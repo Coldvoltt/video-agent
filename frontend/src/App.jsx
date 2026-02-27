@@ -6,6 +6,7 @@ import SearchInterface from './components/SearchInterface';
 import HelperDocument from './components/HelperDocument';
 import Transcript from './components/Transcript';
 import SnippetCreator from './components/SnippetCreator';
+import HowToGuides from './components/HowToGuides';
 import { listSessions, checkHealth } from './api/videoApi';
 
 function App() {
@@ -67,6 +68,7 @@ function App() {
     { id: 'document', label: 'Helper Doc' },
     { id: 'transcript', label: 'Transcript' },
     { id: 'snippets', label: 'Snippets' },
+    { id: 'howto', label: 'How To' },
   ];
 
   return (
@@ -179,6 +181,13 @@ function App() {
 
               <div style={{ display: activeTab === 'snippets' ? 'block' : 'none' }}>
                 <SnippetCreator
+                  userId={userId}
+                  sessionId={currentSession.session_id}
+                />
+              </div>
+
+              <div style={{ display: activeTab === 'howto' ? 'block' : 'none' }}>
+                <HowToGuides
                   userId={userId}
                   sessionId={currentSession.session_id}
                 />
