@@ -7,7 +7,7 @@ on:
     paths:
       - 'backend/**'
       - 'frontend/**'
-      - '.github/workflows/dev_deploy.yml'
+      - '.github/workflows/trigger-deployment.yml'
 
 permissions:
   id-token: write
