@@ -29,6 +29,13 @@ function HelperDocument({ userId, sessionId }) {
     }
   }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-generate on mount / session change when no cached data
+  useEffect(() => {
+    if (!doc && !loading && !cache.current[sessionId]) {
+      loadDocument();
+    }
+  }, [sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const loadDocument = async () => {
     setLoading(true);
     setError(null);
@@ -128,31 +135,7 @@ function HelperDocument({ userId, sessionId }) {
     }
   };
 
-  if (!doc && !loading && !error) {
-    return (
-      <div className="empty-state">
-        <div className="empty-state-icon">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-            <polyline points="14 2 14 8 20 8"></polyline>
-            <line x1="16" y1="13" x2="8" y2="13"></line>
-            <line x1="16" y1="17" x2="8" y2="17"></line>
-            <polyline points="10 9 9 9 8 9"></polyline>
-          </svg>
-        </div>
-        <h3>Generate Helper Document</h3>
-        <p>Create an AI-powered document with key points, summaries, and action items</p>
-        <button onClick={loadDocument} className="btn btn-primary" style={{ marginTop: 20 }}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"></path>
-          </svg>
-          Generate Document
-        </button>
-      </div>
-    );
-  }
-
-  if (loading) {
+  if (loading || (!doc && !error)) {
     return (
       <div className="loading">
         <div className="loading-spinner"></div>

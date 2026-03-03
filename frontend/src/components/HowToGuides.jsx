@@ -85,7 +85,7 @@ function HowToGuides({ userId, sessionId }) {
   };
 
   // Loading state
-  if (loading) {
+  if (loading || (!guides && !error)) {
     return (
       <div className="loading">
         <div className="loading-spinner"></div>
