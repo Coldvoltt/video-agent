@@ -443,7 +443,7 @@ def download_helper_document(
     )
 
     # Extract screenshots for each key point
-    base_url = str(request.base_url).rstrip("/")
+    base_url = "/api"
     video_transcriber.extract_screenshots_for_key_points(
         key_points=doc["key_points"],
         session=session,
