@@ -24,11 +24,12 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 def _cookie_opts() -> dict:
-    """Return yt-dlp cookie opts pointing to cookies.txt in the backend directory."""
+    """Return yt-dlp cookie and runtime opts for YouTube extraction."""
+    opts = {"js_runtimes": {"node": {}}}
     cookies_path = Path(__file__).parent / "cookies.txt"
     if cookies_path.is_file():
-        return {"cookiefile": str(cookies_path)}
-    return {}
+        opts["cookiefile"] = str(cookies_path)
+    return opts
 
 
 def is_url(input_str: str) -> bool:
@@ -243,7 +244,7 @@ def download_youtube_audio(url: str, output_path: str) -> dict:
     output_base = str(Path(output_path).with_suffix(""))
 
     ydl_opts = {
-        "format": "bestaudio/best",
+        "format": "bestaudio*",
         "outtmpl": output_base + ".%(ext)s",
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
