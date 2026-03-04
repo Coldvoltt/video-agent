@@ -36,8 +36,9 @@ jobs:
             pip install --upgrade pip
             pip install -r requirements.txt
 
-            echo "Building frontend..."
-            cd ../frontend
+            echo "Cleaning old frontend build..."
+            rm -rf ~/video-agent/frontend/dist
+            cd ~/video-agent/frontend
             npm install
             npm run build
 
