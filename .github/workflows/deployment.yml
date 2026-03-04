@@ -18,6 +18,12 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
 
+      - name: Write YouTube cookies file to EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.DEPLOY_SSH_HOST }} "cat > ~/video-agent/backend/cookies.txt" <<< "$YOUTUBE_COOKIES"
+        env:
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
+
       - name: Deploy to EC2
         run: |
           echo "=== Starting deployment on EC2 ==="
@@ -35,6 +41,12 @@ jobs:
             source venv/bin/activate
             pip install --upgrade pip
             pip install -r requirements.txt
+
+            echo "Configuring YTDLP_COOKIES_FILE in systemd service..."
+            if ! grep -q 'YTDLP_COOKIES_FILE' /etc/systemd/system/fastapi.service; then
+              sudo sed -i "/^\[Service\]/a Environment=YTDLP_COOKIES_FILE=/home/ubuntu/video-agent/backend/cookies.txt" /etc/systemd/system/fastapi.service
+              sudo systemctl daemon-reload
+            fi
 
             echo "Cleaning old frontend build..."
             rm -rf ~/video-agent/frontend/dist
