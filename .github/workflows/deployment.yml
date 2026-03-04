@@ -30,6 +30,12 @@ jobs:
             git clean -fd
             git pull origin main
 
+            echo "Ensuring Node.js is available..."
+            if ! command -v node &> /dev/null; then
+              curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+
             echo "Installing backend dependencies..."
             cd backend
             source venv/bin/activate
