@@ -9,8 +9,11 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+from dotenv import load_dotenv
 from moviepy import VideoFileClip
 from openai import OpenAI
+
+load_dotenv()
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))

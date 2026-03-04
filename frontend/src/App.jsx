@@ -75,7 +75,7 @@ function App() {
     <div className="app">
       <header className="header">
         <h1>Divverse Video Agent</h1>
-        <p>AI-powered video intelligence</p>
+        <p>AI-powered video intelligence v2</p>
       </header>
 
       {error && <div className="error">{error}</div>}
