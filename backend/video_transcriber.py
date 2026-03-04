@@ -20,6 +20,14 @@ OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 
+def _cookie_opts() -> dict:
+    """Return yt-dlp cookie opts if a cookies file is configured via YTDLP_COOKIES_FILE env var."""
+    cookies_path = os.getenv("YTDLP_COOKIES_FILE")
+    if cookies_path and Path(cookies_path).is_file():
+        return {"cookiefile": cookies_path}
+    return {}
+
+
 def is_url(input_str: str) -> bool:
     """Check if input is a URL."""
     parsed = urlparse(input_str)
@@ -58,6 +66,7 @@ def extract_youtube_transcript(url: str, language: str = "en") -> dict:
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
+        **_cookie_opts(),
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -240,6 +249,7 @@ def download_youtube_audio(url: str, output_path: str) -> dict:
         }],
         "quiet": True,
         "no_warnings": True,
+        **_cookie_opts(),
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -400,7 +410,7 @@ def process_video(video_input: str, language: str = None, output_audio_path: str
 
                 # Get video info for title/duration
                 import yt_dlp
-                with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+                with yt_dlp.YoutubeDL({"quiet": True, **_cookie_opts()}) as ydl:
                     info = ydl.extract_info(video_input, download=False)
                     title = info.get("title", "Untitled Video")
                     duration = info.get("duration", 0)
@@ -672,6 +682,7 @@ def _get_youtube_storyboard_spec(video_url: str) -> dict | None:
         "no_warnings": True,
         "skip_download": True,
         "logger": _YtdlpSilentLogger(),
+        **_cookie_opts(),
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
