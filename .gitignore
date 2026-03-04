@@ -27,7 +27,6 @@ share/python-wheels/
 MANIFEST
 CLAUDE.md
 .claude/
-cookies.txt
 output/
 node_modules/
 

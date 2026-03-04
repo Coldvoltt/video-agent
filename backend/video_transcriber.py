@@ -24,10 +24,10 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 
 def _cookie_opts() -> dict:
-    """Return yt-dlp cookie opts if a cookies file is configured via YTDLP_COOKIES_FILE env var."""
-    cookies_path = os.getenv("YTDLP_COOKIES_FILE")
-    if cookies_path and Path(cookies_path).is_file():
-        return {"cookiefile": cookies_path}
+    """Return yt-dlp cookie opts pointing to cookies.txt in the backend directory."""
+    cookies_path = Path(__file__).parent / "cookies.txt"
+    if cookies_path.is_file():
+        return {"cookiefile": str(cookies_path)}
     return {}
 
 
