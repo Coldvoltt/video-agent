@@ -1,24 +1,19 @@
-# Video Processing
-yt-dlp>=2024.1.0
-moviepy>=2.2.1
-pydub>=0.25.1
+# System requirement: ffmpeg and ffprobe on PATH (or FFMPEG_BINARY / FFPROBE_BINARY).
 
-# OpenAI API
+# Media download. YouTube breaks old yt-dlp releases often; keep this floor current.
+yt-dlp[default]>=2026.10.26
+
+# Transcription + editing agent
 openai>=1.12.0
 
-# RAG / Vector DB
+# Transcript search
 chromadb>=1.5.1
 
-# FastAPI
+# API
 fastapi>=0.135.1
 uvicorn>=0.30.6
 python-multipart>=0.0.6
-
-# PDF Generation
-fpdf2>=2.7.0
-Pillow>=10.0.0
+pydantic>=2.12.5
 
 # Configuration
 python-dotenv>=1.0.0
-pydantic>=2.12.5
-##

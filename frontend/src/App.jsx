@@ -1,224 +1,325 @@
-import { useState, useEffect } from 'react';
-import VideoProcessor from './components/VideoProcessor';
-import SessionList from './components/SessionList';
-import ChatInterface from './components/ChatInterface';
-import SearchInterface from './components/SearchInterface';
-import HelperDocument from './components/HelperDocument';
-import Transcript from './components/Transcript';
-import SnippetCreator from './components/SnippetCreator';
-import HowToGuides from './components/HowToGuides';
-import { listSessions, checkHealth } from './api/videoApi';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { api, errorMessage } from './lib/api';
+import { assetColorMap, isActive } from './lib/format';
+import TopBar from './components/TopBar';
+import MediaBin from './components/MediaBin';
+import Stage from './components/Stage';
+import TimelineStrip from './components/TimelineStrip';
+import ChatPanel from './components/ChatPanel';
+import CaptionEditor from './components/CaptionEditor';
+import ColourPanel from './components/ColourPanel';
+import SoundPanel from './components/SoundPanel';
 
-function App() {
-  const [userId] = useState(() => {
-    const stored = localStorage.getItem('userId');
-    if (stored) return stored;
-    const newId = 'user_' + Math.random().toString(36).substr(2, 9);
-    localStorage.setItem('userId', newId);
-    return newId;
-  });
+const POLL_MS = 1500;
 
-  const [sessions, setSessions] = useState([]);
-  const [currentSession, setCurrentSession] = useState(null);
-  const [activeTab, setActiveTab] = useState('chat');
-  const [loading, setLoading] = useState(false);
+function storedProjectId() {
+  try {
+    return localStorage.getItem('projectId');
+  } catch {
+    return null;
+  }
+}
+
+export default function App() {
+  const [health, setHealth] = useState(null); // null = checking, false = unreachable
+  const [projects, setProjects] = useState([]);
+  const [projectId, setProjectId] = useState(storedProjectId);
+  const [project, setProject] = useState(null);
+  const [jobs, setJobs] = useState([]);
+  const [messages, setMessages] = useState([]);
   const [error, setError] = useState(null);
-  const [apiHealthy, setApiHealthy] = useState(false);
+  const [draft, setDraft] = useState(null); // unsaved hand edits (timeline JSON)
+  const [draftStack, setDraftStack] = useState([]); // earlier draft states, for Ctrl+Z
+  const [selectedClip, setSelectedClip] = useState(null);
+  const [playhead, setPlayhead] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [looks, setLooks] = useState([]);
+  const videoRef = useRef(null);
+  const liveRef = useRef(null);
+
+  // ---- loading
 
   useEffect(() => {
-    checkApiHealth();
-    loadSessions();
+    api.health().then(setHealth).catch(() => setHealth(false));
+    api.looks().then(setLooks).catch(() => {});
+    api
+      .listProjects()
+      .then((list) => {
+        setProjects(list);
+        setProjectId((current) => (current && list.some((p) => p.id === current) ? current : list[0]?.id ?? null));
+      })
+      .catch((e) => setError(errorMessage(e)));
   }, []);
 
-  const checkApiHealth = async () => {
+  useEffect(() => {
     try {
-      const health = await checkHealth();
-      setApiHealthy(health.status === 'healthy');
-    } catch (err) {
-      setApiHealthy(false);
-      setError('Cannot connect to API. Make sure the backend is running.');
+      if (projectId) localStorage.setItem('projectId', projectId);
+    } catch {
+      /* ignore */
     }
-  };
+  }, [projectId]);
 
-  const loadSessions = async () => {
+  const refresh = useCallback(async () => {
+    if (!projectId) return;
     try {
-      const data = await listSessions(userId);
-      setSessions(data.sessions || []);
-    } catch (err) {
-      console.error('Failed to load sessions:', err);
+      const [p, j, m] = await Promise.all([api.getProject(projectId), api.listJobs(projectId), api.messages(projectId)]);
+      setProject(p);
+      setJobs(j);
+      setMessages(m);
+    } catch (e) {
+      if (e?.response?.status === 404) {
+        setProjectId(null);
+        setProject(null);
+      } else {
+        setError(errorMessage(e));
+      }
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    setProject(null);
+    setJobs([]);
+    setMessages([]);
+    setDraft(null);
+    setDraftStack([]);
+    setSelectedClip(null);
+    refresh();
+  }, [refresh]);
+
+  // Poll while anything is in flight; one extra refresh picks up the final state.
+  const busy = jobs.some(isActive);
+  useEffect(() => {
+    if (!busy) return undefined;
+    const t = setInterval(refresh, POLL_MS);
+    return () => {
+      clearInterval(t);
+      refresh();
+    };
+  }, [busy, refresh]);
+
+  // ---- actions
+
+  const createProject = async (name) => {
+    try {
+      const p = await api.createProject(name);
+      setProjects((list) => [p, ...list]);
+      setProjectId(p.id);
+    } catch (e) {
+      setError(errorMessage(e));
     }
   };
 
-  const handleSessionCreated = (session) => {
-    setSessions((prev) => [session, ...prev]);
-    setCurrentSession(session);
-    setActiveTab('chat');
-  };
-
-  const handleSessionDeleted = (sessionId) => {
-    setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
-    if (currentSession?.session_id === sessionId) {
-      setCurrentSession(null);
+  const deleteProject = async () => {
+    if (!project || !window.confirm(`Delete “${project.name}” and all its media and renders?`)) return;
+    try {
+      await api.deleteProject(project.id);
+      const rest = projects.filter((p) => p.id !== project.id);
+      setProjects(rest);
+      setProjectId(rest[0]?.id ?? null);
+    } catch (e) {
+      setError(errorMessage(e));
     }
   };
 
-  const tabs = [
-    { id: 'chat', label: 'Chat' },
-    { id: 'search', label: 'Search' },
-    { id: 'document', label: 'Helper Doc' },
-    { id: 'transcript', label: 'Transcript' },
-    { id: 'snippets', label: 'Snippets' },
-    { id: 'howto', label: 'How To' },
-  ];
+  /** Run an API call, surface errors, then refresh project state. */
+  const act = useCallback(
+    async (fn) => {
+      try {
+        const out = await fn();
+        await refresh();
+        return out;
+      } catch (e) {
+        setError(errorMessage(e));
+        return null;
+      }
+    },
+    [refresh],
+  );
+
+  const colors = useMemo(() => assetColorMap(project?.assets), [project?.assets]);
+
+  const seek = (seconds) => {
+    if (liveRef.current) return liveRef.current.seek(seconds);
+    const v = videoRef.current;
+    if (v) {
+      v.currentTime = seconds;
+      v.play().catch(() => {});
+    }
+  };
+
+  // ---- hand edits: a local draft with its own undo, saved as one version
+
+  const changeDraft = (next) => {
+    setDraftStack((stack) => [...stack, draft ?? project.timeline.data].slice(-100));
+    setDraft(next);
+  };
+  const discardDraft = () => {
+    setDraft(null);
+    setDraftStack([]);
+  };
+  const saveDraft = async () => {
+    setSaving(true);
+    const ok = await act(() => api.saveTimeline(project.id, draft, 'Edited by hand', true));
+    setSaving(false);
+    if (ok) discardDraft();
+  };
+  const undo = () => {
+    if (draft) {
+      if (draftStack.length <= 1) return discardDraft();
+      setDraft(draftStack[draftStack.length - 1]);
+      setDraftStack((stack) => stack.slice(0, -1));
+      return undefined;
+    }
+    if (project?.history?.can_undo) act(() => api.undo(project.id));
+    return undefined;
+  };
+  const redo = () => {
+    if (!draft && project?.history?.can_redo) act(() => api.redo(project.id));
+  };
+
+  useEffect(() => {
+    const onKey = (e) => {
+      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName);
+      if (typing || !(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return;
+      e.preventDefault();
+      if (e.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   return (
     <div className="app">
-      <header className="header">
-        <h1>Divverse Video Agent</h1>
-        <p>AI-powered video intelligence v2</p>
-      </header>
+      <TopBar
+        projects={projects}
+        project={project}
+        projectId={projectId}
+        onSelect={setProjectId}
+        onCreate={createProject}
+        onDelete={deleteProject}
+      />
 
-      {error && <div className="error">{error}</div>}
-
-      {!apiHealthy && (
-        <div className="error">
-          API is not connected. Start the backend with: <code>python api.py</code>
-        </div>
+      {health === false && (
+        <p className="notice notice-error" role="alert">
+          The editor server isn’t responding. Start it from <code>backend/</code> with <code>uvicorn api:app</code> and{' '}
+          <code>python -m editor.worker</code>.
+        </p>
+      )}
+      {health && !health.openai_key && (
+        <p className="notice">
+          Transcription and chat are off: add <code>OPENAI_API_KEY</code> to <code>backend/.env</code> and restart the
+          server.
+        </p>
+      )}
+      {error && (
+        <p className="notice notice-error" role="alert">
+          {error}
+          <button className="link-button" onClick={() => setError(null)}>
+            Dismiss
+          </button>
+        </p>
       )}
 
-      <div className="main-content">
-        <aside className="sidebar">
-          <VideoProcessor
-            userId={userId}
-            onSessionCreated={handleSessionCreated}
-            onError={setError}
-          />
-
-          <div className="section">
-            <h3 className="section-title">Your Sessions</h3>
-            <SessionList
-              sessions={sessions}
-              currentSession={currentSession}
-              onSelectSession={setCurrentSession}
-              onDeleteSession={handleSessionDeleted}
-              userId={userId}
-            />
-          </div>
-        </aside>
-
-        <main className="content">
-          {currentSession ? (
-            <div className="fade-in">
-              <div className="content-header">
-                <h2>{currentSession.title}</h2>
-                <div className="meta">
-                  <span>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <circle cx="12" cy="12" r="10"></circle>
-                      <polyline points="12 6 12 12 16 14"></polyline>
-                    </svg>
-                    {formatDuration(currentSession.duration)}
-                  </span>
-                  <span>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                      <polyline points="22 4 12 14.01 9 11.01"></polyline>
-                    </svg>
-                    {currentSession.source === 'youtube' ? 'YouTube' : 'Local File'}
-                  </span>
-                </div>
-                {currentSession.message && (
-                  <div className="session-message">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <circle cx="12" cy="12" r="10"></circle>
-                      <line x1="12" y1="16" x2="12" y2="12"></line>
-                      <line x1="12" y1="8" x2="12.01" y2="8"></line>
-                    </svg>
-                    {currentSession.message}
-                  </div>
-                )}
-              </div>
-
-              <div className="tabs">
-                {tabs.map((tab) => (
-                  <button
-                    key={tab.id}
-                    className={`tab ${activeTab === tab.id ? 'active' : ''}`}
-                    onClick={() => setActiveTab(tab.id)}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-
-              <div style={{ display: activeTab === 'chat' ? 'block' : 'none' }}>
-                <ChatInterface
-                  userId={userId}
-                  sessionId={currentSession.session_id}
-                />
-              </div>
-
-              <div style={{ display: activeTab === 'search' ? 'block' : 'none' }}>
-                <SearchInterface
-                  userId={userId}
-                  sessionId={currentSession.session_id}
-                />
-              </div>
-
-              <div style={{ display: activeTab === 'document' ? 'block' : 'none' }}>
-                <HelperDocument
-                  userId={userId}
-                  sessionId={currentSession.session_id}
-                />
-              </div>
-
-              <div style={{ display: activeTab === 'transcript' ? 'block' : 'none' }}>
-                <Transcript
-                  userId={userId}
-                  sessionId={currentSession.session_id}
-                />
-              </div>
-
-              <div style={{ display: activeTab === 'snippets' ? 'block' : 'none' }}>
-                <SnippetCreator
-                  userId={userId}
-                  sessionId={currentSession.session_id}
-                />
-              </div>
-
-              <div style={{ display: activeTab === 'howto' ? 'block' : 'none' }}>
-                <HowToGuides
-                  userId={userId}
-                  sessionId={currentSession.session_id}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="empty-state">
-              <div className="empty-state-icon">
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <polygon points="23 7 16 12 23 17 23 7"></polygon>
-                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
-                </svg>
-              </div>
-              <h3>No video selected</h3>
-              <p>Process a YouTube URL or upload a video to get started</p>
-            </div>
-          )}
+      {!projectId ? (
+        <main className="welcome">
+          <h1>Edit by describing it.</h1>
+          <p>
+            Add your footage or a YouTube link, then tell the editor what you want: a 30-second vertical short, the best
+            three moments, no more dead air.
+          </p>
+          <NewProjectForm onCreate={createProject} />
         </main>
-      </div>
+      ) : (
+        <main className="workspace">
+          <MediaBin
+            project={project}
+            jobs={jobs}
+            colors={colors}
+            act={act}
+            canAsk={!!health?.openai_key && !draft && !jobs.some((j) => j.kind === 'agent' && isActive(j))}
+            stockAvailable={!!health?.stock}
+            stockProviders={health?.stock_providers || []}
+            aiImages={!!health?.openai_key}
+            onAsk={(message) => act(() => api.chat(project.id, message))}
+          />
+          <section className="center" aria-label="Preview and timeline">
+            <Stage
+              project={project}
+              jobs={jobs}
+              act={act}
+              videoRef={videoRef}
+              liveRef={liveRef}
+              draft={draft}
+              looks={looks}
+              onTime={setPlayhead}
+            />
+            <TimelineStrip
+              project={project}
+              colors={colors}
+              act={act}
+              onSeek={seek}
+              draft={draft}
+              onDraftChange={changeDraft}
+              onSaveDraft={saveDraft}
+              onDiscardDraft={discardDraft}
+              saving={saving}
+              selectedId={selectedClip}
+              onSelect={setSelectedClip}
+              playhead={() => playhead}
+              onUndo={undo}
+              onRedo={redo}
+            />
+            {draft ? (
+              <p className="notice notice-inline caption-paused">
+                Save or discard your timeline edits to change colour or captions.
+              </p>
+            ) : (
+              <>
+                <ColourPanel project={project} looks={looks} act={act} />
+                <SoundPanel project={project} act={act} playhead={() => playhead} />
+                <CaptionEditor project={project} act={act} onSeek={seek} />
+              </>
+            )}
+          </section>
+          <ChatPanel
+            project={project}
+            jobs={jobs}
+            messages={messages}
+            chatEnabled={!!health?.openai_key}
+            pausedReason={draft ? 'Save or discard your timeline edits before asking the editor for changes.' : null}
+            act={act}
+            onMessageSent={refresh}
+          />
+        </main>
+      )}
     </div>
   );
 }
 
-function formatDuration(seconds) {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  if (hours > 0) {
-    return `${hours}h ${minutes}m ${secs}s`;
-  }
-  return `${minutes}m ${secs}s`;
+function NewProjectForm({ onCreate }) {
+  const [name, setName] = useState('');
+  return (
+    <form
+      className="inline-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (name.trim()) onCreate(name.trim());
+      }}
+    >
+      <label className="visually-hidden" htmlFor="first-project">
+        Project name
+      </label>
+      <input
+        id="first-project"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Project name, e.g. Studio tour vlog"
+        maxLength={200}
+      />
+      <button className="button-primary" disabled={!name.trim()}>
+        Create project
+      </button>
+    </form>
+  );
 }
-
-export default App;

@@ -24,10 +24,6 @@ chroma_client = chromadb.PersistentClient(
     settings=Settings(anonymized_telemetry=False),
 )
 
-# Store current collection name for session
-_current_collection_name = None
-
-
 def generate_embeddings(texts: list[str]) -> list[list[float]]:
     """
     Generate embeddings using OpenAI API.
@@ -101,8 +97,6 @@ def index_transcript(transcript: dict, video_id: str = None) -> str:
     Returns:
         Collection name for the indexed transcript
     """
-    global _current_collection_name
-
     # Generate video ID from content if not provided
     if not video_id:
         content_hash = hashlib.md5(transcript["full_text"][:1000].encode()).hexdigest()
@@ -122,7 +116,10 @@ def index_transcript(transcript: dict, video_id: str = None) -> str:
         collection.delete(ids=existing["ids"])
 
     # Chunk transcript
-    chunks = chunk_transcript(transcript)
+    # Empty text (music, silence) is rejected by the embeddings API and is useless for search.
+    chunks = [c for c in chunk_transcript(transcript) if c["text"].strip()]
+    if not chunks:
+        return collection_name
 
     # Prepare data
     documents = [c["text"] for c in chunks]
@@ -140,29 +137,25 @@ def index_transcript(transcript: dict, video_id: str = None) -> str:
         ids=ids,
     )
 
-    _current_collection_name = collection_name
     return collection_name
 
 
-def search(query: str, n_results: int = 5, collection_name: str = None) -> list[dict]:
+def search(query: str, collection_name: str, n_results: int = 5) -> list[dict]:
     """
     Search for relevant transcript segments.
 
     Args:
         query: Search query
         n_results: Number of results to return
-        collection_name: Optional collection name (uses current if not provided)
+        collection_name: Collection to search (one per video; never shared state)
 
     Returns:
         List of results with text, start, end, relevance
     """
-    global _current_collection_name
+    if not collection_name:
+        raise ValueError("collection_name is required.")
 
-    name = collection_name or _current_collection_name
-    if not name:
-        raise ValueError("No collection available. Index a transcript first.")
-
-    collection = chroma_client.get_collection(name)
+    collection = chroma_client.get_collection(collection_name)
 
     # Generate query embedding
     query_embedding = generate_embeddings([query])[0]
@@ -187,7 +180,7 @@ def search(query: str, n_results: int = 5, collection_name: str = None) -> list[
     return formatted
 
 
-def find_timestamps_for_topic(topic: str, n_results: int = 1) -> list[dict]:
+def find_timestamps_for_topic(topic: str, collection_name: str, n_results: int = 1) -> list[dict]:
     """
     Find timestamp ranges for a given topic.
 
@@ -198,11 +191,11 @@ def find_timestamps_for_topic(topic: str, n_results: int = 1) -> list[dict]:
     Returns:
         List of {start, end, text} dicts
     """
-    results = search(topic, n_results=n_results)
+    results = search(topic, collection_name, n_results=n_results)
     return [{"start": r["start"], "end": r["end"], "text": r["text"]} for r in results]
 
 
-def get_context_for_query(query: str, n_results: int = 3) -> str:
+def get_context_for_query(query: str, collection_name: str, n_results: int = 3) -> str:
     """
     Get relevant context text for a query (for LLM prompting).
 
@@ -213,7 +206,7 @@ def get_context_for_query(query: str, n_results: int = 3) -> str:
     Returns:
         Combined context text with timestamps
     """
-    results = search(query, n_results=n_results)
+    results = search(query, collection_name, n_results=n_results)
 
     context_parts = []
     for r in results:
@@ -231,10 +224,7 @@ def list_collections() -> list[str]:
 
 def delete_collection(collection_name: str):
     """Delete an indexed video collection."""
-    global _current_collection_name
     chroma_client.delete_collection(collection_name)
-    if _current_collection_name == collection_name:
-        _current_collection_name = None
 
 
 def collection_exists(collection_name: str) -> bool:
@@ -246,47 +236,23 @@ def collection_exists(collection_name: str) -> bool:
         return False
 
 
-def set_current_collection(collection_name: str):
-    """Set the current active collection."""
-    global _current_collection_name
-    # Verify it exists
-    chroma_client.get_collection(collection_name)
-    _current_collection_name = collection_name
-
-
-def ensure_collection_indexed(collection_name: str, transcript: dict) -> bool:
+def ensure_collection_indexed(collection_name: str, transcript: dict) -> str | None:
     """
     Ensure a collection exists, re-indexing from transcript if needed.
 
-    Args:
-        collection_name: Expected collection name
-        transcript: Transcript dict with segments and full_text
-
     Returns:
-        True if collection exists or was successfully re-indexed
+        The collection name to search, or None if it could not be (re)built.
     """
-    global _current_collection_name
-
     if collection_exists(collection_name):
-        _current_collection_name = collection_name
-        return True
+        return collection_name
 
     # Collection missing - re-index from transcript
     if not transcript or not transcript.get("segments"):
-        return False
+        return None
 
     # Extract video_id from collection name (format: transcript_video_xxxx)
     video_id = collection_name.replace("transcript_", "")
-
-    # Re-index
-    new_collection_name = index_transcript(transcript, video_id)
-    _current_collection_name = new_collection_name
-    return True
-
-
-def get_current_collection() -> str:
-    """Get the current active collection name."""
-    return _current_collection_name
+    return index_transcript(transcript, video_id)
 
 
 def _format_time(seconds: float) -> str:
