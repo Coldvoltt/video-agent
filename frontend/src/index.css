@@ -971,6 +971,43 @@ progress::-moz-progress-bar {
   accent-color: var(--amber);
 }
 
+.background-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  align-items: end;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.background-controls > label:not(.check-row) {
+  display: grid;
+  gap: 4px;
+}
+
+.background-controls input[type='range'] {
+  accent-color: var(--amber);
+}
+
+.background-controls .fine-print {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.check-row input {
+  accent-color: var(--amber);
+  width: 16px;
+  height: 16px;
+}
+
 .inspector-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1141,6 +1178,99 @@ progress::-moz-progress-bar {
   .live-keyword {
     animation: none;
   }
+}
+
+/* ---------------------------------------------------------------- stickers */
+
+.lane-sticker {
+  background: rgba(142, 155, 234, 0.42);
+}
+
+.live-sticker {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.sticker-row {
+  display: grid;
+  gap: 8px;
+}
+
+.sticker-row:first-of-type {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+}
+
+.sticker-color {
+  display: grid;
+  gap: 4px;
+}
+
+.sticker-color input {
+  width: 44px;
+  height: 36px;
+  padding: 3px;
+}
+
+.sticker-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 6px;
+}
+
+.sticker-pick {
+  width: 100%;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 6px 4px;
+  background: var(--surround);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.sticker-pick:hover {
+  border-color: var(--amber);
+  color: var(--text);
+}
+
+.sticker-thumb {
+  width: 48px;
+  height: 48px;
+}
+
+.emoji-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.emoji-pick {
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 6px;
+  background: var(--surround);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.emoji-pick:hover {
+  border-color: var(--amber);
+}
+
+.emoji-custom {
+  max-width: 280px;
 }
 
 /* ---------------------------------------------------------------- colour looks */

@@ -1,5 +1,6 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { API_BASE, assetFileUrl } from '../lib/api';
+import { API_BASE, assetFileUrl, stickerUrl } from '../lib/api';
+import LottieSticker from './LottieSticker';
 import { timecode } from '../lib/format';
 import { clipIndexAt, clipSpans } from '../lib/timelineEdit';
 
@@ -290,6 +291,7 @@ const LivePreview = forwardRef(function LivePreview({ project, timeline, lines, 
   }
 
   const textNow = (timeline.text || []).filter((x) => t >= x.start && t < x.end);
+  const stickersNow = (timeline.stickers || []).filter((x) => t >= x.start && t < x.end);
   const brollNow = (timeline.broll || []).filter((b) => t >= b.start && t < b.start + b.duration && assets[b.asset_id]);
   const overlaysNow = (timeline.overlays || []).filter((o) => t >= o.start && t < o.end && assets[o.asset_id]?.kind === 'image');
   const imageClip = isImage(view.index) ? assets[clip.asset_id] : null;
@@ -300,6 +302,7 @@ const LivePreview = forwardRef(function LivePreview({ project, timeline, lines, 
   if ((timeline.overlays || []).some((o) => assets[o.asset_id]?.kind === 'video')) unsupported.push('video overlays');
   if ((timeline.audio || []).some((a) => a.duck)) unsupported.push('music ducking');
   if (timeline.audio_polish) unsupported.push('audio polish');
+  if (clips.some((c) => c.background)) unsupported.push('background changes');
 
   return (
     <div className="live-preview">
@@ -332,6 +335,16 @@ const LivePreview = forwardRef(function LivePreview({ project, timeline, lines, 
             );
           })}
         </div>
+        {stickersNow.map((st) => {
+          const asset = st.sticker.startsWith('asset:') ? assets[st.sticker.slice(6)] : null;
+          const url = asset ? assetFileUrl(project.id, asset) : stickerUrl(st.sticker, st.color);
+          const loop = st.loop ?? (st.sticker.startsWith('emoji:') || st.sticker.startsWith('asset:'));
+          return (
+            <LottieSticker key={st.id} url={url} elapsed={t - st.start} loop={loop} className="live-sticker"
+              style={{ left: `${(st.x ?? 0.5) * 100}%`, top: `${(st.y ?? 0.35) * 100}%`, width: `${(st.scale ?? 0.25) * 100}%`,
+                transform: `translate(-50%, -50%) rotate(${st.rotation || 0}deg)` }} />
+          );
+        })}
         {textNow.map((x) => {
           const [v, h] = GRID[x.position] || GRID.center;
           const size = TEXT_SIZE[x.style] * (x.size || 1) * base;

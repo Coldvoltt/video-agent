@@ -44,6 +44,8 @@ The worker is required: without it uploads stay "waiting" and chat never answers
 - **Chat editing**: cut pauses and filler words, short-form clips and "best moments", remove sections, change format (9:16, 16:9, 1:1, 4:5), with follow-ups.
 - **B-roll**: your own cutaway clips (auto split into described shots), stock video from Pixabay (or Pexels), and AI-generated stills with camera motion; the editor places them on the words they illustrate.
 - **Emphasis**: keyword pops, punch-in zooms on key moments, 7 built-in sound effects placed automatically, and one-click audio polish (social loudness, noise reduction, clearer voice).
+- **Stickers**: 7 animated callouts (circle, underline, box, arrow, check, cross, sparkle) in any colour, animated emoji, and your own Lottie `.json` animations; the editor can place them on cue ("an arrow when I mention the elephants").
+- **Backgrounds**: blur, recolour or replace what's behind you (with B-roll, a stock clip or an AI image), using an AI cut-out (MODNet) or a green/blue-screen key. The first preview after an AI cut-out takes a few minutes; later ones reuse it.
 - **Colour looks**: 12 built-in looks (Teal & Orange, Warm Film, Noir, ...) previewed on your own footage, with a strength slider; each downloadable as a `.cube`. Your own `.cube` LUTs work too.
 - **Styling**: animated captions (karaoke, pop, boxed, minimal), 23 transitions, colour presets and LUTs, titles and lower thirds, image/video overlays, music and sound effects with ducking under speech, punch-in zooms.
 - **Reference videos**: add a video whose style you like; it's analysed (pacing, colour, captions, audio, framing) and the editor can apply that style to your footage.
@@ -83,3 +85,5 @@ frontend/src/
 - SQLite, local disk and a single worker: fine for one machine. Postgres, object storage and a Redis queue are planned for hosting.
 - The live preview is approximate (no transitions, LUTs, video overlays or ducking); the rendered preview is exact.
 - Only add YouTube videos you own or have rights to edit.
+- Background removal runs on the CPU (about 7 minutes per minute of footage, once); it downloads a 26 MB model on first use.
+- Animated emoji are Noto Animated Emoji by Google, CC BY 4.0; credit them where you publish. Sticker rendering uses rlottie (LGPL-2.1) through `rlottie-python`.

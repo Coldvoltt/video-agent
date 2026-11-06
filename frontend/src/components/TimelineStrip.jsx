@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { shortDuration, timecode } from '../lib/format';
 import ClipInspector from './ClipInspector';
 import BrollInspector from './BrollInspector';
+import StickerInspector from './StickerInspector';
 
 const CAPTION_NAMES = { karaoke: 'Karaoke', pop: 'Pop', boxed: 'Boxed', minimal: 'Minimal' };
 const TEXT_STYLE_NAMES = { title: 'Title', label: 'Label', lower_third: 'Lower third' };
@@ -115,7 +116,8 @@ export default function TimelineStrip({
   const names = Object.fromEntries((project.assets || []).map((a) => [a.id, a.filename || 'media']));
   const look = gradeName(data.grade, names);
   const hasLayers = data.captions || data.text?.length || data.overlays?.length || data.audio?.length
-    || data.broll?.length || data.zooms?.length;
+    || data.broll?.length || data.zooms?.length || data.stickers?.length;
+  const selectedSticker = (data.stickers || []).some((x) => x.id === selectedId);
   const selectedBroll = (data.broll || []).some((b) => b.id === selectedId);
 
   const showVersion = async (v) => {
@@ -242,7 +244,11 @@ Punch-in ${c.zoom}×` : ''}${
         />
       )}
 
-      {selectedId && !isOld && !selectedBroll && (
+      {selectedId && !isOld && selectedSticker && (
+        <StickerInspector timeline={data} layerId={selectedId} onChange={onDraftChange} onSelect={onSelect} onSeek={onSeek} />
+      )}
+
+      {selectedId && !isOld && !selectedBroll && !selectedSticker && (
         <ClipInspector
           project={project}
           timeline={data}
@@ -283,6 +289,19 @@ Punch-in ${c.zoom}×` : ''}${
               items={data.broll.map((b) => ({
                 id: b.id, start: b.start, end: b.start + b.duration, label: names[b.asset_id],
                 title: `${names[b.asset_id]} ${timecode(b.start)}–${timecode(b.start + b.duration)}`,
+              }))} />
+          )}
+          {data.stickers?.length > 0 && (
+            <Lane name="Stickers" tone="sticker" total={total} selectedId={!isOld ? selectedId : null}
+              onPick={isOld ? undefined : (id) => {
+                onSelect(id);
+                const st = data.stickers.find((x) => x.id === id);
+                if (st) onSeek(Math.max(0, st.start - 0.3));
+              }}
+              items={data.stickers.map((st) => ({
+                id: st.id, start: st.start, end: st.end,
+                label: st.sticker.startsWith('emoji:') ? st.sticker.slice(6) : st.sticker.startsWith('asset:') ? 'Animation' : st.sticker,
+                title: `${st.sticker} ${timecode(st.start)}–${timecode(st.end)}`,
               }))} />
           )}
           {data.zooms?.length > 0 && (

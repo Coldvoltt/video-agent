@@ -60,6 +60,29 @@ class Transition(_Strict):
     duration: float = Field(0.5, ge=0.1, le=2.0)
 
 
+class Background(_Strict):
+    """Replace what's behind the subject in one clip."""
+    replace_with: Literal["blur", "color", "media"] = Field(
+        description="blur = the original background blurred; color = a solid colour; media = an image or video asset")
+    method: Literal["ai", "chroma"] = Field(
+        "ai", description="ai = cut the person out with a matting model; chroma = key out a green/blue screen")
+    color: Optional[str] = Field(None, pattern=HEX_COLOR, description="For replace_with=color")
+    asset_id: Optional[str] = Field(None, max_length=64, description="For replace_with=media: image or video (loops)")
+    blur: float = Field(0.5, ge=0.05, le=1.0, description="For replace_with=blur: how strong")
+    key_color: str = Field("#00FF00", pattern=HEX_COLOR, description="For method=chroma: the screen colour")
+    key_tolerance: float = Field(0.12, ge=0.03, le=0.5, description="For method=chroma: how much of the screen colour to key")
+
+    @model_validator(mode="after")
+    def _needs(self) -> "Background":
+        if self.replace_with == "color" and not self.color:
+            raise ValueError("background: replace_with=color needs a color")
+        if self.replace_with == "media" and not self.asset_id:
+            raise ValueError("background: replace_with=media needs an asset_id")
+        if self.replace_with != "media" and self.asset_id:
+            raise ValueError("background: asset_id only applies to replace_with=media")
+        return self
+
+
 class Clip(_Strict):
     id: str = Field(pattern=LAYER_ID)
     asset_id: str = Field(min_length=1, max_length=64)
@@ -68,6 +91,7 @@ class Clip(_Strict):
     volume: float = Field(1.0, ge=0, le=4)
     zoom: Optional[float] = Field(None, ge=1.0, le=2.0, description="Punch-in: 1.15 = 15% closer, centred")
     transition_in: Optional[Transition] = Field(None, description="Transition from the previous clip into this one")
+    background: Optional[Background] = Field(None, description="Replace the background behind the subject")
 
     @model_validator(mode="after")
     def _order(self) -> "Clip":
@@ -230,6 +254,26 @@ class BrollLayer(_Strict):
         return self.start + self.duration
 
 
+class StickerLayer(_Strict):
+    """Animated sticker or callout (Lottie) at output time; x/y is its centre (0..1 of the frame)."""
+    id: str = Field(pattern=LAYER_ID)
+    sticker: str = Field(min_length=1, max_length=80, pattern=r"^(emoji:.+|asset:[A-Za-z0-9_-]+|[a-z_]+)$")
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    x: float = Field(0.5, ge=0, le=1)
+    y: float = Field(0.35, ge=0, le=1)
+    scale: float = Field(0.25, ge=0.03, le=1.0, description="Width as a fraction of the frame width")
+    rotation: float = Field(0, ge=-360, le=360)
+    color: Optional[str] = Field(None, pattern=HEX_COLOR, description="Built-in callouts only")
+    loop: Optional[bool] = Field(None, description="Default: emoji loop, callouts draw once and stay")
+
+    @model_validator(mode="after")
+    def _order(self) -> "StickerLayer":
+        if self.end - self.start < 0.2:
+            raise ValueError(f"sticker {self.id}: must last at least 0.2s")
+        return self
+
+
 class Timeline(_Strict):
     version: Literal[1] = 1
     output: OutputSpec = Field(default_factory=OutputSpec)
@@ -241,12 +285,14 @@ class Timeline(_Strict):
     audio: list[AudioTrack] = Field(default_factory=list, max_length=20)
     broll: list[BrollLayer] = Field(default_factory=list, max_length=200)
     zooms: list[ZoomLayer] = Field(default_factory=list, max_length=300)
+    stickers: list[StickerLayer] = Field(default_factory=list, max_length=100)
     audio_polish: Optional[AudioPolish] = None
 
     @model_validator(mode="after")
     def _check(self) -> "Timeline":
         ids: set[str] = set()
-        for layer in [*self.clips, *self.text, *self.overlays, *self.audio, *self.broll, *self.zooms]:
+        for layer in [*self.clips, *self.text, *self.overlays, *self.audio, *self.broll, *self.zooms,
+                      *self.stickers]:
             if layer.id in ids:
                 raise ValueError(f"duplicate id: {layer.id}")
             ids.add(layer.id)
@@ -319,6 +365,18 @@ def check_assets(timeline: Timeline, assets: dict[str, dict], project_id: str) -
             errors.append(
                 f"clip {c.id}: out={c.out:.3f}s is past the end of asset {c.asset_id} ({a['duration']:.3f}s)"
             )
+        if c.background:
+            if a and a["kind"] != "video":
+                errors.append(f"clip {c.id}: background replacement needs a video clip")
+            if c.background.asset_id:
+                lookup("clip background", c.id, c.background.asset_id, ("video", "image"))
+    for st in timeline.stickers:
+        if st.sticker.startswith("asset:"):
+            lookup("sticker", st.id, st.sticker[6:], ("lottie",))
+        elif not st.sticker.startswith("emoji:"):
+            from .stickers import CALLOUTS
+            if st.sticker not in CALLOUTS:
+                errors.append(f"sticker {st.id}: unknown sticker {st.sticker!r}")
     for b in timeline.broll:
         a = lookup("b-roll", b.id, b.asset_id, ("video", "image"))
         if a and a.get("role") == "reference":
@@ -345,7 +403,8 @@ def layer_warnings(timeline: Timeline) -> list[str]:
     """Layers that start after the video ends (they are skipped when rendering)."""
     total = timeline.duration
     out = []
-    for layer in [*timeline.text, *timeline.overlays, *timeline.audio, *timeline.broll, *timeline.zooms]:
+    for layer in [*timeline.text, *timeline.overlays, *timeline.audio, *timeline.broll, *timeline.zooms,
+                  *timeline.stickers]:
         if layer.start >= total:
             out.append(f"{layer.id} starts at {layer.start:.1f}s, after the video ends ({total:.1f}s); it will be skipped")
     return out

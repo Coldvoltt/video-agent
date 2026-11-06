@@ -238,8 +238,26 @@ Order agreed: 1) B-roll, 2) emphasis pack (keyword pops, emphasis zooms, auto so
 - [x] Agent tools: `emphasize` (pop + zoom + sound per phrase, capped at a 1.5 s beat), `add_zoom`, `add_sound_effect`, `auto_sound_effects` (no two effects within 0.35 s), `set_audio_polish`
 - [x] UI: Sound panel (polish switches, sound library with preview and "add at playhead"), Zoom row, sound effects in the Audio row, keyword pops/zooms/effects in the live preview
 - [x] Live-run fixes: 5-second "emphasis" zoom from a stretched word timing (now capped); zooms hidden under B-roll; near-stacked sounds; replies with markdown and "3:00" for three seconds; live preview text was 1.6-1.7x too big (font metric mismatch with libass, now corrected from the font files) and hidden behind cutaways
-- [ ] Emoji with keyword pops (needs step 3: Lottie)
+- [x] Emoji with keyword pops (`emphasize` takes an optional emoji, added in step 3)
 - [ ] The agent sometimes picks a B-roll shot that doesn't match and says so; stricter rule added, to watch in testing
+
+**Step 3: Lottie stickers and callouts (done)**
+- [x] Timeline `stickers[]` layer: callout, animated emoji or uploaded Lottie `.json`, with position, size, rotation, colour and loop; rendered to transparent frames with rlottie and overlaid after B-roll, under captions
+- [x] 7 built-in callouts generated as Lottie with draw-on animation (circle, underline, box, arrow, check, cross, sparkle), any colour
+- [x] Animated emoji from Noto Animated Emoji (CC BY 4.0, credit shown in the UI), downloaded on first use and cached; words and ASCII rejected
+- [x] Agent tools: `list_stickers`, `add_sticker`; `emphasize` can add an emoji
+- [x] UI: Stickers panel (animated callout thumbnails, popular emoji, any emoji, your animations), Stickers timeline row, sticker inspector (position, size, rotation, timing, colour, remove), stickers in the live preview via lottie-web (MIT, loaded only when needed)
+- [x] Live-run fixes: the agent silently skipped one of three requested stickers; the prompt now makes it do every part of a request or say what it didn't do. The live preview crashed when a sticker left the screen (lottie-web listener removed after destroy)
+- Licences: MODNet weights and code are Apache-2.0. rlottie is LGPL-2.1 and used unmodified through `rlottie-python`; keep it a separate, replaceable library
+
+**Step 3b: Background removal (done)**
+- [x] Person mattes with MODNet (Apache-2.0) on the CPU via ONNX Runtime. ONNX export from Hugging Face `Xenova/modnet` (Apache-2.0), pinned revision, SHA-256 checked, downloaded on first use to `<storage>/models/modnet.onnx` (or `EDITOR_MODNET_PATH`)
+- [x] Only the source ranges clips use are matted (15 fps, 384 px short side, light temporal smoothing) and cached as grey FFV1 files per range; trims inside a cached range reuse it. About 0.45 s a frame on this machine, so 1 minute of footage takes about 7 minutes the first time
+- [x] Per-clip `background`: blur (the real background), solid colour, or an image/video asset (B-roll, stock, AI image; videos loop); letterbox bars count as background
+- [x] Green/blue screen: colour key with spill removal, screen colour detected from the frame edges (default tolerance 0.12; 0.3 ate into skin and hair)
+- [x] Agent tool `set_background` (auto picks colour key or AI cut-out, warns that the first preview is slower); API `GET /assets/{id}/screen-color`; clip inspector controls; "what changed" lines
+- [x] Live-run fixes: half-sure matte areas ghosted the old background through (hay above the head); matte levels are now firmed up before compositing
+- [ ] Live preview doesn't show background changes (listed under "not shown live"); the rendered preview does
 
 
 ## 7. Risks, legal and open questions

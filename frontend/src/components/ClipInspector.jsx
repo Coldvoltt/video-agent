@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { api } from '../lib/api';
 import { shortDuration, timecode } from '../lib/format';
 import { clipSpans, deleteClip, moveClip, setClipTimes, splitAt, updateClip } from '../lib/timelineEdit';
 
@@ -22,6 +24,111 @@ const ZOOMS = [
   ['1.3', '1.3× closer'],
   ['1.5', '1.5× closer'],
 ];
+
+const BACKGROUNDS = [
+  ['', 'Original'],
+  ['blur', 'Blurred'],
+  ['color', 'Solid colour'],
+  ['media', 'Image or video'],
+];
+
+/** Replace what's behind the person: AI cut-out by default, or a colour key for green/blue screen footage. */
+function BackgroundControls({ project, timeline, clip, asset, change }) {
+  const [detecting, setDetecting] = useState(false);
+  const [note, setNote] = useState('');
+  const bg = clip.background;
+  if (asset?.kind !== 'video') return null;
+  const media = project.assets.filter(
+    (a) => a.status === 'ready' && (a.kind === 'image' || a.kind === 'video') && a.role !== 'reference' && a.id !== clip.asset_id,
+  );
+  const set = (next) => change(updateClip(timeline, clip.id, { background: next }));
+  const pick = (kind) => {
+    if (!kind) return set(null);
+    const base = { method: bg?.method || 'ai', ...(bg?.method === 'chroma' ? { key_color: bg.key_color, key_tolerance: bg.key_tolerance } : {}) };
+    if (kind === 'blur') return set({ ...base, replace_with: 'blur', blur: 0.5 });
+    if (kind === 'color') return set({ ...base, replace_with: 'color', color: '#1E2A44' });
+    if (!media.length) return setNote('Add B-roll, a stock clip or an image first.');
+    return set({ ...base, replace_with: 'media', asset_id: media[0].id });
+  };
+  const greenScreen = async (on) => {
+    setNote('');
+    if (!on) return set({ ...bg, method: 'ai', key_color: undefined, key_tolerance: undefined });
+    setDetecting(true);
+    try {
+      const color = await api.screenColor(project.id, clip.asset_id, clip.in + 0.5);
+      if (!color) setNote("This clip doesn't look like a green or blue screen; pick the screen colour yourself.");
+      set({ ...bg, method: 'chroma', key_color: color || '#00FF00', key_tolerance: bg.key_tolerance ?? 0.12 });
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  return (
+    <div className="background-controls">
+      <label>
+        <span className="control-label">Background</span>
+        <select value={bg?.replace_with || ''} onChange={(e) => pick(e.target.value)}>
+          {BACKGROUNDS.map(([v, l]) => (
+            <option key={v} value={v}>
+              {l}
+            </option>
+          ))}
+        </select>
+      </label>
+      {bg?.replace_with === 'blur' && (
+        <label>
+          <span className="control-label">Blur {Math.round(bg.blur * 100)}%</span>
+          <input type="range" min="0.05" max="1" step="0.05" value={bg.blur} onChange={(e) => set({ ...bg, blur: Number(e.target.value) })} />
+        </label>
+      )}
+      {bg?.replace_with === 'color' && (
+        <label>
+          <span className="control-label">Colour</span>
+          <input type="color" value={bg.color} onChange={(e) => set({ ...bg, color: e.target.value.toUpperCase() })} />
+        </label>
+      )}
+      {bg?.replace_with === 'media' && (
+        <label>
+          <span className="control-label">Show behind you</span>
+          <select value={bg.asset_id} onChange={(e) => set({ ...bg, asset_id: e.target.value })}>
+            {media.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.filename || a.id} ({a.kind === 'image' ? 'image' : 'video'})
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {bg && (
+        <label className="check-row">
+          <input type="checkbox" checked={bg.method === 'chroma'} disabled={detecting} onChange={(e) => greenScreen(e.target.checked)} />
+          <span>{detecting ? 'Finding the screen colour…' : 'Shot on a green or blue screen'}</span>
+        </label>
+      )}
+      {bg?.method === 'chroma' && (
+        <>
+          <label>
+            <span className="control-label">Screen colour</span>
+            <input type="color" value={bg.key_color} onChange={(e) => set({ ...bg, key_color: e.target.value.toUpperCase() })} />
+          </label>
+          <label>
+            <span className="control-label">Key strength {Math.round(bg.key_tolerance * 100)}</span>
+            <input type="range" min="0.03" max="0.5" step="0.01" value={bg.key_tolerance}
+              onChange={(e) => set({ ...bg, key_tolerance: Number(e.target.value) })} />
+          </label>
+        </>
+      )}
+      <p className="fine-print">
+        {note ||
+          (bg && bg.method !== 'chroma'
+            ? 'The person is cut out with AI (MODNet). The first preview after this takes a few minutes; later ones reuse it.'
+            : bg
+              ? 'Raise the key strength if green edges remain; lower it if parts of you disappear.'
+              : 'Blur, recolour or replace what is behind you.')}
+      </p>
+    </div>
+  );
+}
 
 export default function ClipInspector({ project, timeline, clipId, onChange, onSelect, playhead }) {
   const clips = timeline.clips;
@@ -121,6 +228,8 @@ export default function ClipInspector({ project, timeline, clipId, onChange, onS
           />
         </label>
       </div>
+
+      <BackgroundControls project={project} timeline={timeline} clip={clip} asset={asset} change={change} />
 
       <div className="inspector-actions">
         <button

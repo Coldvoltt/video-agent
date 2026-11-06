@@ -4,7 +4,7 @@ import { isActive, timecode } from '../lib/format';
 import StockSearch from './StockSearch';
 
 const ACCEPT_FOOTAGE =
-  '.mp4,.mov,.mkv,.webm,.avi,.m4v,.flv,.mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,.png,.jpg,.jpeg,.webp,.bmp,.cube';
+  '.mp4,.mov,.mkv,.webm,.avi,.m4v,.flv,.mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,.png,.jpg,.jpeg,.webp,.bmp,.cube,.json';
 const ACCEPT_REFERENCE = '.mp4,.mov,.mkv,.webm,.avi,.m4v,.flv';
 const ACCEPT_BROLL = `${ACCEPT_REFERENCE},.png,.jpg,.jpeg,.webp`;
 
@@ -44,7 +44,7 @@ function assetStatus(asset, job) {
 
 function describe(asset) {
   const parts = [];
-  if (asset.kind) parts.push({ video: 'Video', audio: 'Audio', image: 'Image', lut: 'Colour LUT' }[asset.kind]);
+  if (asset.kind) parts.push({ video: 'Video', audio: 'Audio', image: 'Image', lut: 'Colour LUT', lottie: 'Animation (sticker)' }[asset.kind]);
   if (asset.duration) parts.push(timecode(asset.duration));
   if (asset.width && asset.height) parts.push(`${asset.width}×${asset.height}`);
   return parts.join(', ');
@@ -136,7 +136,7 @@ function AddMedia({ role, project, act, onUploading }) {
             ? 'A video whose style you like. It’s analysed, never cut into your edit.'
             : isBroll
               ? 'Cutaway clips or photos. Each clip is split into shots and described so the editor can match them to what you say.'
-              : 'or drop footage, music, sound effects, images or .cube LUTs here'}
+              : 'or drop footage, music, sound effects, images, .cube LUTs or Lottie animations here'}
         </span>
         <input
           ref={fileInput}

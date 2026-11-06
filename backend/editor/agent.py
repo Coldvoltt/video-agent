@@ -54,8 +54,12 @@ How to work:
 9. Changing the clips keeps captions, grade, text, overlays and audio, but text/overlay/audio times may need moving afterwards. Clip transitions are lost when clips are replaced with set_timeline; re-apply them if the user had asked for them.
 10. If a tool returns errors, fix the input and try again. Never invent asset ids or timestamps; take them from tool results.
 
+Stickers and callouts: add_sticker with a callout (circle or box around something, arrow pointing at it, underline,
+check, cross, sparkle) when the speaker points at or names something on screen, or an emoji that matches the emotion
+(🔥 hype, 🤯 surprise, 😂 joke, 💡 idea, ✅/❌ do/don't). A few per minute at most; never cover the face.
+
 Emphasis (to "spice it up", "make it engaging", "add energy"):
-- emphasize puts a big keyword, a punch-in zoom and a pop sound on a phrase. Choose the 1-2 words that carry the point
+- emphasize puts a big keyword, a punch-in zoom and a pop sound on a phrase (optionally an animated emoji). Choose the 1-2 words that carry the point
   (numbers, results, strong claims), roughly one every 5-10 seconds; never on filler or every sentence.
 - auto_sound_effects adds whooshes into cutaways, swipes on transitions and pops on keywords; add_sound_effect for
   one-offs (riser before a reveal, ding on a key point, impact on a bold claim). Keep sound effects below the voice.
@@ -82,10 +86,17 @@ When the user asks to edit "like", "in the style of" or "inspired by" a referenc
   to adjust afterwards. Music only from the user's own uploaded files.
 - Tell the user what was applied and what was skipped, using the tool's applied/skipped report.
 
+Backgrounds: set_background when the user asks to remove, replace, blur or change the background behind them, or to
+put them "in front of" something (a B-roll clip, a stock clip, a generated image). For a scene that doesn't exist yet,
+generate_broll_image or search_stock_broll first, then use that asset. Mention that the first preview takes longer
+when the tool says so.
+
 Not available yet: speed changes, AI-generated music, images or voice, stock footage, face-tracking reframes, per-clip colour, motion graphics beyond the text animations offered.
 If the user asks for these, do the parts you can and say plainly what is not supported yet.
 
 Finish with a short reply to the user: 2-4 plain sentences saying what you changed and the new length.
+Before replying, go through every part of the user's request: do each one, or say plainly which part you did not do
+and why. Never leave a requested change out silently.
 Only describe changes that tool results confirm; if a step failed or was skipped, say so.
 Write one short paragraph: no headings, bullet lists, bold or markdown. Times are minutes:seconds into the video,
 so three seconds is 0:03 (never 3:00). Write times as m:ss (for example 0:45). Do not mention tool names or internal ids.
@@ -187,7 +198,7 @@ class EditSession:
             ],
             **({"clips_truncated": len(clips) - 80} if len(clips) > 80 else {}),
         }
-        for key in ("grade", "captions", "text", "overlays", "audio", "broll", "zooms", "audio_polish"):
+        for key in ("grade", "captions", "text", "overlays", "audio", "broll", "zooms", "stickers", "audio_polish"):
             if self.draft.get(key):
                 summary[key] = self.draft[key]
         warnings = layer_warnings(tl)
@@ -197,7 +208,7 @@ class EditSession:
 
     def new_id(self, prefix: str, reserved: set[str] | None = None) -> str:
         """A layer id not used on the draft (nor in `reserved`, for ids handed out before a commit)."""
-        taken = {x["id"] for key in ("clips", "text", "overlays", "audio", "broll", "zooms")
+        taken = {x["id"] for key in ("clips", "text", "overlays", "audio", "broll", "zooms", "stickers")
                  for x in (self.draft or {}).get(key, [])} | (reserved or set())
         n = 1
         while f"{prefix}{n}" in taken:
@@ -570,11 +581,11 @@ def tool_add_audio(s: EditSession, asset_id: str, start: float = 0, source_in: f
 
 def tool_remove_layer(s: EditSession, layer_id: str) -> dict:
     draft = s.require_draft()
-    for key in ("text", "overlays", "audio", "broll", "zooms"):
+    for key in ("text", "overlays", "audio", "broll", "zooms", "stickers"):
         layers = draft.get(key, [])
         if any(x["id"] == layer_id for x in layers):
             return s._commit({**draft, key: [x for x in layers if x["id"] != layer_id]})
-    raise ToolInputError(f"No text, overlay, audio, B-roll or zoom layer with id {layer_id!r}")
+    raise ToolInputError(f"No text, overlay, audio, B-roll, zoom or sticker layer with id {layer_id!r}")
 
 
 def tool_get_captions(s: EditSession, start: float = 0, end: float | None = None) -> dict:
@@ -1055,6 +1066,7 @@ def tool_emphasize(s: EditSession, items: list[dict]) -> dict:
     """Keyword pop + punch-in zoom + sound on spoken phrases, each timed to the words."""
     draft = s.require_draft()
     text, zooms, audio = list(draft.get("text", [])), list(draft.get("zooms", [])), list(draft.get("audio", []))
+    stickers_ = list(draft.get("stickers", []))
     placed, missing, notes = [], [], []
     reserved: set[str] = set()
     covered = [(b["start"], b["start"] + b["duration"]) for b in draft.get("broll", [])]
@@ -1080,6 +1092,18 @@ def tool_emphasize(s: EditSession, items: list[dict]) -> dict:
         elif item.get("zoom", True):
             zooms.append({"id": s.new_id("zoom", reserved), "start": round(max(0, start - 0.06), 3),
                           "end": round(end + 0.35, 3), "scale": float(item.get("zoom_scale", 1.15)), "focus_y": 0.4})
+        if item.get("emoji"):
+            try:
+                ref = _sticker_string(s, str(item["emoji"]))
+                from . import stickers as _st
+                _st.resolve(ref)
+                y = {"bottom": 0.66, "top": 0.27}.get(item.get("position", "center"), 0.5)
+                stickers_.append({"id": s.new_id("sticker", reserved), "sticker": ref,
+                                  "start": round(max(0, start - 0.03), 3),
+                                  "end": round(min(max(end + 0.45, start + 0.8), start + 1.6), 3),
+                                  "x": 0.5, "y": y, "scale": 0.2})
+            except Exception as exc:       # an emoji without an animation shouldn't sink the whole emphasis
+                notes.append(f"No emoji for “{phrase}”: {exc}")
         sound = item.get("sound", "pop")
         if sound:
             audio.append({"id": s.new_id("sfx", reserved), "sfx": sound, "start": round(max(0, start - 0.03), 3),
@@ -1087,7 +1111,7 @@ def tool_emphasize(s: EditSession, items: list[dict]) -> dict:
         placed.append({"phrase": phrase, "at": start, "text": label})
     if not placed:
         return {"error": f"None of the phrases were found in the current edit: {missing}"}
-    result = s._commit({**draft, "text": text, "zooms": zooms, "audio": audio})
+    result = s._commit({**draft, "text": text, "zooms": zooms, "audio": audio, "stickers": stickers_})
     if result.get("ok"):
         result = {"ok": True, "placed": placed, **({"not_found": missing} if missing else {}),
                   **({"notes": notes} if notes else {}), "duration_seconds": result.get("duration_seconds")}
@@ -1167,6 +1191,7 @@ _register(tool_emphasize,
                              "pop": {"type": "boolean"}, "zoom": {"type": "boolean"},
                              "zoom_scale": {"type": "number", "minimum": 1.05, "maximum": 1.4},
                              "sound": {"type": ["string", "null"], "enum": [*_SFX, None]},
+                             "emoji": {"type": "string", "description": "Animated emoji shown above the word, e.g. 🔥"},
                              "position": {"type": "string", "enum": ["center", "bottom", "top"]},
                              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}},
               "required": ["phrase"], "additionalProperties": False}}},
@@ -1190,6 +1215,140 @@ _register(tool_set_audio_polish,
           "noise reduction), voice (clearer, more present voice). Only the fields you pass change.",
           {"normalize": {"type": "boolean"}, "denoise": {"type": "string", "enum": ["off", "light", "strong"]},
            "voice": {"type": "boolean"}})
+
+
+# ---------------------------------------------------------------- stickers and callouts (Phase 6, step 3)
+
+def _sticker_string(s: EditSession, sticker: str) -> str:
+    from . import stickers
+
+    sticker = sticker.strip()
+    if sticker in stickers.CALLOUTS or sticker.startswith(("emoji:", "asset:")):
+        return sticker
+    if sticker in s.assets:
+        if s.assets[sticker].get("kind") != "lottie":
+            raise ToolInputError(f"Asset {sticker} is not an animation (.json Lottie).")
+        return f"asset:{sticker}"
+    try:                                   # a bare emoji character or codepoint
+        stickers.emoji_code(sticker)
+        return f"emoji:{sticker}"
+    except stickers.StickerError:
+        raise ToolInputError(f"Unknown sticker {sticker!r}: use a callout name, an emoji, or an animation asset id.")
+
+
+def tool_list_stickers(s: EditSession) -> dict:
+    from . import stickers
+
+    own = [{"sticker": f"asset:{a['id']}", "name": a.get("filename")} for a in s.assets.values()
+           if a.get("kind") == "lottie" and a["status"] == "ready"]
+    return {"callouts": [{"sticker": k, "description": v} for k, v in stickers.CALLOUTS.items()],
+            "emoji": "Any emoji character works as an animated sticker, e.g. 🔥 🤯 👏 💡 ✅ 🚀 💰 😂",
+            "uploaded_animations": own}
+
+
+def tool_add_sticker(s: EditSession, sticker: str, start: float, duration: float = 1.5, x: float = 0.5,
+                     y: float = 0.35, scale: float = 0.25, rotation: float = 0, color: str | None = None) -> dict:
+    from . import stickers
+
+    draft = s.require_draft()
+    ref = _sticker_string(s, sticker)
+    if ref.startswith("emoji:"):
+        try:
+            stickers.resolve(ref)          # make sure an animated version exists before placing it
+        except stickers.StickerError as exc:
+            return {"error": str(exc)}
+    layer = _drop_none({"id": s.new_id("sticker"), "sticker": ref, "start": round(start, 3),
+                        "end": round(start + duration, 3), "x": x, "y": y, "scale": scale, "rotation": rotation,
+                        "color": color})
+    result = s._commit({**draft, "stickers": [*draft.get("stickers", []), layer]})
+    return {"layer_id": layer["id"], "ok": True} if result.get("ok") else result
+
+
+def tool_set_background(s: EditSession, replace_with: str, clip_ids: list[str] | None = None,
+                        color: str | None = None, asset_id: str | None = None, blur: float = 0.5,
+                        method: str = "auto") -> dict:
+    from . import matte
+
+    draft = s.require_draft()
+    clips = draft["clips"]
+    ids = set(clip_ids or [c["id"] for c in clips])
+    unknown = ids - {c["id"] for c in clips}
+    if unknown:
+        return {"error": f"Unknown clip ids {sorted(unknown)}. Call get_timeline."}
+    if replace_with == "none":
+        new = [{k: v for k, v in c.items() if k != "background"} if c["id"] in ids else c for c in clips]
+        result = s._commit({**draft, "clips": new})
+        return {"ok": True, "removed_from": sorted(ids)} if result.get("ok") else result
+    if replace_with == "media":
+        a = s._asset_or_error(asset_id or "")
+        if a.get("kind") not in ("video", "image"):
+            return {"error": "asset_id must be a video or image (B-roll, stock or a generated image)."}
+
+    new, report, matte_seconds = [], [], 0.0
+    screens: dict[str, str | None] = {}
+    for c in clips:
+        if c["id"] not in ids:
+            new.append(c)
+            continue
+        bg = _drop_none({"replace_with": replace_with, "color": color, "asset_id": asset_id,
+                         "blur": blur if replace_with == "blur" else None})
+        use = method
+        if method in ("auto", "chroma"):
+            if c["asset_id"] not in screens:
+                a = s.assets.get(c["asset_id"]) or {}
+                screens[c["asset_id"]] = (matte.screen_color(storage.path(a["storage_key"]), c["in"] + 0.5)
+                                          if a.get("storage_key") and a.get("kind") == "video" else None)
+            key = screens[c["asset_id"]]
+            if key:
+                use = "chroma"
+                bg.update(method="chroma", key_color=key)
+            elif method == "chroma":
+                return {"error": f"Clip {c['id']} doesn't look like a green or blue screen; use method ai."}
+            else:
+                use = "ai"
+        if use == "ai":
+            matte_seconds += c["out"] - c["in"]
+        new.append({**c, "background": bg})
+        report.append({"clip_id": c["id"], "method": "green/blue screen key" if use == "chroma" else "AI cut-out"})
+    result = s._commit({**draft, "clips": new})
+    if not result.get("ok"):
+        return result
+    out = {"ok": True, "clips": report}
+    if matte_seconds:
+        # about 15 matte frames a second of footage at roughly 0.4 s each on a CPU; cached afterwards
+        out["note"] = (f"The first preview takes about {max(1, round(matte_seconds * 15 * 0.4 / 60))} min longer "
+                       "while the person is cut out; later previews reuse it.")
+    return out
+
+
+_register(tool_set_background,
+          "Replace the background behind the person in clips (all clips unless clip_ids is given). replace_with: "
+          "blur (the real background, blurred; blur 0.05-1), color (solid hex colour), media (an image or video asset, "
+          "e.g. B-roll, stock or a generated image; videos loop), or none (remove the effect). method auto uses a "
+          "colour key when the footage is shot on a green/blue screen and an AI cut-out otherwise. Works on video "
+          "clips only. To change only part of the video, split the clip first or pass the clip ids that cover it.",
+          {"replace_with": {"type": "string", "enum": ["blur", "color", "media", "none"]},
+           "clip_ids": {"type": "array", "items": {"type": "string"}},
+           "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"},
+           "asset_id": {"type": "string"},
+           "blur": {"type": "number", "minimum": 0.05, "maximum": 1},
+           "method": {"type": "string", "enum": ["auto", "ai", "chroma"]}},
+          ["replace_with"])
+
+
+_register(tool_list_stickers, "List animated stickers: built-in callouts, emoji, and the user's uploaded Lottie animations.")
+_register(tool_add_sticker,
+          "Place an animated sticker at output time start. sticker = a callout (circle, underline, box, arrow, check, "
+          "cross, sparkle), an emoji character (animated), or an uploaded animation's asset id. x/y = centre "
+          "(0..1 of the frame; faces are around y 0.35-0.45, so keep stickers clear of them), scale = width as a "
+          "fraction of the frame, rotation in degrees (an arrow points right at 0, down at 90). color for callouts.",
+          {"sticker": {"type": "string", "maxLength": 40}, "start": _NUM,
+           "duration": {"type": "number", "minimum": 0.3, "maximum": 30},
+           "x": {"type": "number", "minimum": 0, "maximum": 1}, "y": {"type": "number", "minimum": 0, "maximum": 1},
+           "scale": {"type": "number", "minimum": 0.03, "maximum": 1},
+           "rotation": {"type": "number", "minimum": -360, "maximum": 360},
+           "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}},
+          ["sticker", "start"])
 
 
 def execute_tool(s: EditSession, call: ToolCall) -> tuple[str, bool]:

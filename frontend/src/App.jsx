@@ -9,6 +9,7 @@ import ChatPanel from './components/ChatPanel';
 import CaptionEditor from './components/CaptionEditor';
 import ColourPanel from './components/ColourPanel';
 import SoundPanel from './components/SoundPanel';
+import StickerPanel from './components/StickerPanel';
 
 const POLL_MS = 1500;
 
@@ -278,6 +279,7 @@ export default function App() {
               <>
                 <ColourPanel project={project} looks={looks} act={act} />
                 <SoundPanel project={project} act={act} playhead={() => playhead} />
+                <StickerPanel project={project} act={act} playhead={() => playhead} />
                 <CaptionEditor project={project} act={act} onSeek={seek} />
               </>
             )}

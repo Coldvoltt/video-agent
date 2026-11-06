@@ -19,7 +19,8 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv"}
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"}
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 LUT_EXTS = {".cube"}
-ALLOWED_UPLOAD_EXTS = VIDEO_EXTS | AUDIO_EXTS | IMAGE_EXTS | LUT_EXTS
+LOTTIE_EXTS = {".json"}
+ALLOWED_UPLOAD_EXTS = VIDEO_EXTS | AUDIO_EXTS | IMAGE_EXTS | LUT_EXTS | LOTTIE_EXTS
 
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be", "www.youtu.be", "music.youtube.com"}
 

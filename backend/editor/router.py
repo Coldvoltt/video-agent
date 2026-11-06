@@ -214,6 +214,18 @@ def get_asset_file(project_id: str, asset_id: str, user_id: str = USER_ID,
     return FileResponse(path, filename=Path(asset["filename"] or path.name).name)
 
 
+@router.get("/projects/{project_id}/assets/{asset_id}/screen-color")
+def get_screen_color(project_id: str, asset_id: str, user_id: str = USER_ID, t: float = Query(0.5, ge=0)):
+    """The green/blue screen colour of a video (for chroma keying), or null if it isn't shot on one."""
+    from . import matte
+
+    _project_or_404(project_id, user_id)
+    asset = store.get_asset(asset_id)
+    if not asset or asset["project_id"] != project_id or asset.get("kind") != "video" or not asset.get("storage_key"):
+        raise HTTPException(status_code=404, detail="Video not found")
+    return {"color": matte.screen_color(storage.path(asset["storage_key"]), t)}
+
+
 # ---------------------------------------------------------------- timeline
 
 class TimelineIn(BaseModel):
@@ -372,6 +384,37 @@ def generate_broll(project_id: str, body: GenerateImageIn, user_id: str = USER_I
     job = jobs.enqueue("genimage", user_id, {"asset_id": asset["id"], "prompt": body.prompt,
                                              "orientation": orientation}, project_id)
     return {"asset": _public_asset(asset), "job": jobs.public_view(job)}
+
+
+# ---------------------------------------------------------------- stickers and callouts (Lottie)
+
+POPULAR_EMOJI = ["🔥", "😂", "🤯", "😍", "👏", "💯", "🚀", "💡", "✅", "❌", "👀", "🎉", "💰", "❤️", "😱", "🙌"]
+
+
+@router.get("/stickers")
+def list_stickers():
+    from . import stickers
+
+    return {"callouts": [{"id": k, "description": v} for k, v in stickers.CALLOUTS.items()],
+            "default_color": stickers.DEFAULT_COLOR, "popular_emoji": POPULAR_EMOJI,
+            "emoji_credit": stickers.NOTO_CREDIT}
+
+
+@router.get("/stickers/lottie")
+def sticker_lottie(sticker: str = Query(..., max_length=80), color: Optional[str] = Query(None, pattern=r"^#[0-9a-fA-F]{6}$")):
+    """Lottie JSON for a built-in callout or an emoji (the live preview plays it with lottie-web)."""
+    from fastapi.responses import Response
+
+    from . import stickers
+
+    if sticker.startswith("asset:"):
+        raise HTTPException(status_code=400, detail="Use the asset file endpoint for uploaded animations")
+    try:
+        data = stickers.resolve(sticker, color)
+    except stickers.StickerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return Response(content=data, media_type="application/json",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ---------------------------------------------------------------- sound effects (built-in)

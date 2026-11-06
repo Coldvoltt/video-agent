@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Callable
 
-from . import media, renderer, storage, store
+from . import matte, media, renderer, storage, store
 from .timeline import Timeline, check_assets
 
 Progress = Callable[[float, str | None], None]
@@ -47,7 +47,14 @@ def ingest(job: dict, progress: Progress) -> dict:
 
         progress(0.5, "Reading media info")
         path = _asset_path(asset)
-        info = media.inspect_lut(path) if path.suffix.lower() in media.LUT_EXTS else media.probe(path)
+        if path.suffix.lower() in media.LUT_EXTS:
+            info = media.inspect_lut(path)
+        elif path.suffix.lower() in media.LOTTIE_EXTS:
+            from . import stickers
+
+            info = stickers.inspect_lottie(path)
+        else:
+            info = media.probe(path)
         store.update_asset(asset["id"], **info)
     except Exception as exc:
         store.update_asset(asset["id"], status="failed", error=str(exc)[-1000:])
@@ -252,9 +259,11 @@ def render(job: dict, progress: Progress) -> dict:
         raise JobError("Timeline is not renderable: " + "; ".join(problems))
 
     used = ({c.asset_id for c in timeline.clips} | {o.asset_id for o in timeline.overlays}
-            | {t.asset_id for t in timeline.audio if t.asset_id} | {b.asset_id for b in timeline.broll})
+            | {t.asset_id for t in timeline.audio if t.asset_id} | {b.asset_id for b in timeline.broll}
+            | {st.sticker[6:] for st in timeline.stickers if st.sticker.startswith("asset:")})
     if timeline.grade and timeline.grade.lut_asset_id:
         used.add(timeline.grade.lut_asset_id)
+    used |= {c.background.asset_id for c in timeline.clips if c.background and c.background.asset_id}
     paths = {aid: _asset_path(assets[aid]) for aid in used}
     transcripts = {}
     if timeline.captions:
@@ -262,14 +271,41 @@ def render(job: dict, progress: Progress) -> dict:
             transcripts[aid] = (store.get_asset(aid, with_transcript=True) or {}).get("transcript")
     key = storage.render_key(job["user_id"], project_id, job["id"])
 
-    progress(0.0, "Rendering preview" if payload.get("preview") else "Rendering")
+    mattes, share = _mattes(timeline, assets, paths, progress)
+    label = "Rendering preview" if payload.get("preview") else "Rendering"
+    progress(share, label)
     info = renderer.render(
         timeline, assets, paths, storage.path(key),
         preview=bool(payload.get("preview")),
-        on_progress=lambda f: progress(f, None),
+        on_progress=lambda f: progress(share + (1 - share) * f, None),
         transcripts=transcripts,
+        mattes=mattes,
     )
     return {"storage_key": key, "timeline_version": payload["timeline_version"], **info}
+
+
+def _mattes(timeline: Timeline, assets: dict, paths: dict, progress: Progress) -> tuple[dict, float]:
+    """Person mattes for clips with an AI background; computes (and caches) missing ones.
+    Returns {clip_id: (matte file, source time it starts at)} and the share of progress used."""
+    wanted: dict[str, list] = {}
+    for c in timeline.clips:
+        if c.background and c.background.method == "ai":
+            wanted.setdefault(c.asset_id, []).append(c)
+    if not wanted:
+        return {}, 0.0
+    missing = any(matte.find(assets[aid], c.in_, c.out) is None for aid, cs in wanted.items() for c in cs)
+    share = 0.6 if missing else 0.0
+    out = {}
+    try:
+        n = len(wanted)
+        for k, (aid, clips) in enumerate(wanted.items()):
+            found = matte.ensure(assets[aid], paths[aid], [(c.in_, c.out) for c in clips],
+                                 progress=lambda f, m, _k=k: progress(share * (_k + f) / n, m))
+            for c in clips:
+                out[c.id] = found[(c.in_, c.out)]
+    except matte.MatteError as e:
+        raise JobError(str(e)) from e
+    return out, share
 
 
 # ---------------------------------------------------------------- agent

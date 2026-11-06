@@ -28,6 +28,7 @@ from . import captions as captions_mod
 from . import colormatch
 from . import luts as luts_mod
 from . import sfx as sfx_mod
+from . import stickers as stickers_mod
 from .config import require_ffmpeg
 from .timeline import Grade, Timeline
 
@@ -112,7 +113,7 @@ class RenderPlan:
     width: int
     height: int
     fps: float
-    files: dict[str, Path | str] = field(default_factory=dict)  # name in work dir -> source path or text
+    files: dict[str, Path | str | bytes] = field(default_factory=dict)  # name in work dir -> source path or text
 
 
 class _Graph:
@@ -140,13 +141,82 @@ _POS_XY = {
 }
 
 
+def _hex(c: str) -> str:
+    return "0x" + c.lstrip("#").upper()
+
+
+def _background(g: "_Graph", clip, asset: dict, i: int, w: int, h: int, fps: float, fit: str,
+                assets: dict[str, dict], asset_paths: dict[str, Path],
+                mattes: dict[str, tuple[Path, float]]) -> str:
+    """Composite the subject of one clip over a new background; returns a label at w x h."""
+    bg = clip.background
+    dur = _f(clip.duration)
+    sw, sh = _even(asset.get("width") or w), _even(asset.get("height") or h)
+    cover = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
+    mask_fit = re.sub(r":color=[^,]*$", ":color=black", fit)  # letterbox bars count as background
+    need_bgsrc = bg.replace_with == "blur"
+    chroma = bg.method == "chroma"
+    outs = 1 + int(need_bgsrc) + int(chroma)
+    src = g.label("bsrc")
+    names = [g.label("bs") for _ in range(outs)]
+    g.add(f"[{i}:v:0]setpts=PTS-STARTPTS,fps={_f(fps)},scale={sw}:{sh},setsar=1,split={outs}"
+          + "".join(f"[{n}]" for n in names))
+    fg_raw, rest = names[0], names[1:]
+
+    # mask (white = subject) at the source size
+    mask = g.label("mk")
+    if chroma:
+        key_src = rest.pop()
+        r, gg, b = (int(bg.key_color[k:k + 2], 16) for k in (1, 3, 5))
+        g.add(f"[{key_src}]format=yuva444p,chromakey={_hex(bg.key_color)}:{_f(bg.key_tolerance)}:0.08,"
+              f"alphaextract[{mask}]")
+        spill = "blue" if b > gg else "green"
+        fg2 = g.label("fg")
+        g.add(f"[{fg_raw}]format=gbrap,despill=type={spill},format=yuv420p[{fg2}]")
+        fg_raw = fg2
+    else:
+        if clip.id not in mattes:
+            raise RenderError(f"clip {clip.id}: background matte is missing")
+        mpath, seg_start = mattes[clip.id]
+        mi = g.input("-ss", _f(max(0.0, clip.in_ - seg_start)), "-t", dur, "-i", str(mpath))
+        g.add(f"[{mi}:v:0]setpts=PTS-STARTPTS,format=gray,scale={sw}:{sh}:flags=bicubic,fps={_f(fps)},"
+              f"tpad=stop_mode=clone:stop_duration={dur}[{mask}]")
+
+    fg, mk = g.label("fgf"), g.label("mkf")
+    g.add(f"[{fg_raw}]{fit},setsar=1,format=yuv420p[{fg}]")
+    # Firm up the matte: faint values (unsure areas, which ghost through) go to 0, near-solid ones to 1.
+    levels = "" if chroma else ",lut=c0='clip((val-40)*255/170,0,255)'"
+    g.add(f"[{mask}]format=gray{levels},{mask_fit},setsar=1,gblur=sigma=1[{mk}]")
+    fga = g.label("fga")
+    g.add(f"[{fg}][{mk}]alphamerge[{fga}]")
+
+    back = g.label("bg")
+    if bg.replace_with == "blur":
+        sigma = max(4.0, bg.blur * w * 0.035)
+        g.add(f"[{rest.pop()}]{cover},gblur=sigma={_f(sigma)},setsar=1,format=yuv420p[{back}]")
+    elif bg.replace_with == "color":
+        g.add(f"color=c={_hex(bg.color)}:s={w}x{h}:r={_f(fps)}:d={dur},format=yuv420p[{back}]")
+    else:
+        media = assets[bg.asset_id]
+        msrc = str(asset_paths[bg.asset_id])
+        if media["kind"] == "image":
+            bi = g.input("-loop", "1", "-framerate", _f(fps), "-t", dur, "-i", msrc)
+        else:
+            bi = g.input("-stream_loop", "-1", "-t", dur, "-i", msrc)
+        g.add(f"[{bi}:v:0]setpts=PTS-STARTPTS,{cover},fps={_f(fps)},setsar=1,format=yuv420p[{back}]")
+    comp = g.label("comp")
+    g.add(f"[{back}][{fga}]overlay=format=auto:shortest=1,format=yuv420p[{comp}]")
+    return comp
+
+
 def build_plan(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[str, Path],
-               out_path: Path, preview: bool, transcripts: Optional[dict[str, dict | None]] = None) -> RenderPlan:
+               out_path: Path, preview: bool, transcripts: Optional[dict[str, dict | None]] = None,
+               mattes: Optional[dict[str, tuple[Path, float]]] = None) -> RenderPlan:
     ffmpeg = require_ffmpeg()
     w, h, fps = output_size(timeline, preview)
     total = timeline.duration
     g = _Graph()
-    files: dict[str, Path | str] = {}
+    files: dict[str, Path | str | bytes] = {}
 
     bg = timeline.output.background
     if timeline.output.fit == "cover":
@@ -172,8 +242,13 @@ def build_plan(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[st
         if clip.zoom and clip.zoom > 1.0:
             # Centre crop then scale back up: a closer framing of the same shot (punch-in).
             punch = f",crop=iw/{_f(clip.zoom)}:ih/{_f(clip.zoom)},scale={w}:{h}"
-        g.add(f"[{i}:v:0]setpts=PTS-STARTPTS,{fit}{punch},fps={_f(fps)},format=yuv420p,setsar=1,"
-              f"trim=duration={dur},setpts=PTS-STARTPTS,settb=AVTB[{v}]")
+        if clip.background and asset["kind"] == "video":
+            comp = _background(g, clip, asset, i, w, h, fps, fit, assets, asset_paths, mattes or {})
+            g.add(f"[{comp}]null{punch},fps={_f(fps)},format=yuv420p,setsar=1,"
+                  f"trim=duration={dur},setpts=PTS-STARTPTS,settb=AVTB[{v}]")
+        else:
+            g.add(f"[{i}:v:0]setpts=PTS-STARTPTS,{fit}{punch},fps={_f(fps)},format=yuv420p,setsar=1,"
+                  f"trim=duration={dur},setpts=PTS-STARTPTS,settb=AVTB[{v}]")
         if asset["kind"] == "video" and asset.get("has_audio"):
             g.add(f"[{i}:a:0]asetpts=PTS-STARTPTS,{afmt},volume={_f(clip.volume)},"
                   f"apad,atrim=duration={dur},asetpts=PTS-STARTPTS[{a}]")
@@ -296,6 +371,27 @@ def build_plan(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[st
               f"enable='between(t,{_f(ov.start)},{_f(end)})'[{nv}]")
         cur_v = nv
 
+    # 4b. animated stickers and callouts (Lottie frames rendered here, overlaid by ffmpeg)
+    for si, st in enumerate(sorted(timeline.stickers, key=lambda x: x.start)):
+        if st.start >= total:
+            continue
+        dur = min(st.end, total) - st.start
+        try:
+            data = stickers_mod.resolve(st.sticker, st.color, asset_paths)
+            loop = stickers_mod.default_loop(st.sticker) if st.loop is None else st.loop
+            pngs = stickers_mod.render_frames(data, dur, fps, _even(w * st.scale), loop, st.rotation)
+        except stickers_mod.StickerError as exc:
+            raise RenderError(f"Sticker {st.id}: {exc}") from exc
+        folder = f"stk{si}"
+        for k, png in enumerate(pngs):
+            files[f"{folder}/{k:05d}.png"] = png
+        i = g.input("-framerate", _f(fps), "-i", f"{folder}/%05d.png")
+        sl, nv = g.label("sl"), g.label("sv")
+        g.add(f"[{i}:v:0]format=rgba,setpts=PTS-STARTPTS+{_f(st.start)}/TB[{sl}]")
+        g.add(f"[{cur_v}][{sl}]overlay=x={_f(st.x * w)}-w/2:y={_f(st.y * h)}-h/2:eof_action=pass:"
+              f"enable='between(t,{_f(st.start)},{_f(st.start + dur)})'[{nv}]")
+        cur_v = nv
+
     # 5. captions + text
     ass = captions_mod.build_ass(timeline, transcripts or {})
     if ass:
@@ -401,18 +497,21 @@ def build_plan(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[st
 
 def render(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[str, Path], out_path: Path,
            preview: bool = False, on_progress: Optional[Callable[[float], None]] = None,
-           transcripts: Optional[dict[str, dict | None]] = None) -> dict:
+           transcripts: Optional[dict[str, dict | None]] = None,
+           mattes: Optional[dict[str, tuple[Path, float]]] = None) -> dict:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     asset_paths = {k: Path(v).resolve() for k, v in asset_paths.items()}
     with tempfile.TemporaryDirectory(prefix="render_") as tmp:
         work = Path(tmp)
-        plan = build_plan(timeline, assets, asset_paths, out_path, preview, transcripts)
+        plan = build_plan(timeline, assets, asset_paths, out_path, preview, transcripts, mattes)
         for name, content in plan.files.items():
             dest = work / name
             dest.parent.mkdir(parents=True, exist_ok=True)
             if isinstance(content, Path):
                 shutil.copyfile(content, dest)
+            elif isinstance(content, bytes):
+                dest.write_bytes(content)
             else:
                 dest.write_text(content, encoding="utf-8")
         err_path = work / "stderr.txt"

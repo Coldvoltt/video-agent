@@ -56,6 +56,7 @@ def describe_changes(old: Optional[dict], new: dict, names: Optional[dict[str, s
     trimmed = [i for i in common if (old_clips[i]["in"], old_clips[i]["out"]) != (new_clips[i]["in"], new_clips[i]["out"])]
     zoomed = [i for i in common if old_clips[i].get("zoom") != new_clips[i].get("zoom")]
     trans = [i for i in common if old_clips[i].get("transition_in") != new_clips[i].get("transition_in")]
+    backs = [i for i in common if old_clips[i].get("background") != new_clips[i].get("background")]
     order_old = [i for i in old_clips if i in new_clips]
     # A split = a kept clip now ends where a new clip from the same source begins, and together
     # they cover the original range.
@@ -83,6 +84,14 @@ def describe_changes(old: Optional[dict], new: dict, names: Optional[dict[str, s
         out.append("Reordered clips")
     if zoomed:
         out.append(f"Changed punch-in on {_plural(len(zoomed), 'clip')}")
+    if backs:
+        kinds = {(new_clips[i].get("background") or {}).get("replace_with") for i in backs}
+        what = {"blur": "blurred", "color": "a solid colour", "media": "an image or video"}
+        if kinds == {None}:
+            out.append(f"Original background restored on {_plural(len(backs), 'clip')}")
+        else:
+            label = ", ".join(sorted(what.get(k, "original") for k in kinds))
+            out.append(f"Background replaced ({label}) on {_plural(len(backs), 'clip')}")
     if trans or (added and any(new_clips[i].get("transition_in") for i in added)):
         kinds = {new_clips[i]["transition_in"]["type"] for i in new_clips if new_clips[i].get("transition_in")}
         out.append("Transitions: " + (", ".join(sorted(kinds)) if kinds else "hard cuts"))
@@ -131,6 +140,16 @@ def describe_changes(old: Optional[dict], new: dict, names: Optional[dict[str, s
         parts = [f"added {added_b}" if added_b else "", f"removed {removed_b}" if removed_b else "",
                  f"changed {changed_b}" if changed_b else ""]
         out.append("B-roll: " + ", ".join(p for p in parts if p) + f" ({_plural(len(bb), 'cutaway')} now)")
+    sa, sb = {x.id: x for x in a.stickers}, {x.id: x for x in b.stickers}
+    if sa != sb:
+        name = lambda st: st.sticker.replace("emoji:", "").replace("asset:", "animation ")  # noqa: E731
+        added = [name(sb[i]) for i in sb if i not in sa]
+        if added:
+            out.append(f"Added sticker{'s' if len(added) > 1 else ''}: {', '.join(added)}")
+        if [i for i in sa if i not in sb]:
+            out.append(f"Removed {_plural(len([i for i in sa if i not in sb]), 'sticker')}")
+        if [i for i in sb if i in sa and sa[i] != sb[i]]:
+            out.append(f"Changed {_plural(len([i for i in sb if i in sa and sa[i] != sb[i]]), 'sticker')}")
     za, zb = len(a.zooms), len(b.zooms)
     if [z.model_dump() for z in a.zooms] != [z.model_dump() for z in b.zooms]:
         out.append(f"Emphasis zooms: {za} → {zb}" if za != zb else "Emphasis zooms changed")
