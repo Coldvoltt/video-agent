@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from pydantic import ValidationError
 
-from . import analysis, colormatch, edits, media, storage, store
+from . import analysis, billing, colormatch, edits, media, storage, store, typefaces
 from . import captions as captions_mod
 from . import luts as luts_mod
 from .llm import LLMProvider, ToolCall, ToolSpec
@@ -67,13 +67,17 @@ Emphasis (to "spice it up", "make it engaging", "add energy"):
   thin or muddy voices. It changes the sound only, never the length.
 
 B-roll (cutaways shown over the speaker while their voice continues):
-- Use it when the user asks for B-roll, cutaways or "make it more visual". Always call list_broll first and pick
-  the shot whose description shows what is being said; set source_in to that shot's start and keep the cutaway
-  inside the shot (add_broll trims it and reports what it shows; check that it matches). Only place a shot that
-  shows what is being said; if none fits, use stock or a generated image, or leave that moment without B-roll.
-  Place B-roll before adding emphasis. Prefer the user's own B-roll; otherwise search_stock_broll with concrete visual queries, then
-  add_stock_broll; if stock is unavailable or has nothing fitting, generate_broll_image (a still, moved with
-  push_in or a pan). Only generate images when the user asked for B-roll or visuals. Place each cutaway with find_phrase on the words it illustrates, starting just before them.
+- When the user asks for B-roll, cutaways or "make it more visual", call plan_broll first. It reads the whole
+  transcript, works out what each moment is about, writes the stock search keywords itself, checks the clips
+  and places only ones that clearly show what is said. Pass the user's own words about the B-roll as wishes.
+  Don't place images or clips already in the project instead (they were made for other things), and don't pick
+  moments or keywords yourself before calling it.
+- Use the user's own uploaded B-roll (list_broll, source "uploaded") only when they ask for their own clips, or
+  when a shot's description clearly shows what is said: set source_in to that shot's start and keep the cutaway
+  inside the shot (add_broll trims it and reports what it shows; check that it matches).
+- If plan_broll can't place anything (no stock key, nothing matched), say so; offer generate_broll_image for a
+  specific moment (a still, moved with push_in or a pan). Only generate images when the user asked for visuals.
+- Report what plan_broll placed and what it skipped and why. Place B-roll before adding emphasis.
 - Good B-roll: 1.5-4 s per cutaway, at most about a third of the runtime, never in the first 2 seconds (the hook,
   the face sells it) and not over punchlines or reactions. Vary shots; don't reuse one clip back to back.
 - Say which clips came from stock and which images are AI-generated; stock credit is shown automatically.
@@ -90,6 +94,28 @@ Backgrounds: set_background when the user asks to remove, replace, blur or chang
 put them "in front of" something (a B-roll clip, a stock clip, a generated image). For a scene that doesn't exist yet,
 generate_broll_image or search_stock_broll first, then use that asset. Mention that the first preview takes longer
 when the tool says so.
+
+Multicam (several cameras filming the same take): when the user has 2-3 videos of the same moment from
+different angles, or asks for a multicam edit, call create_multicam with those videos (and audio_asset_id if they
+uploaded a separate audio recording). Then build the edit on the multicam asset it returns, not on the single
+camera files (set_timeline, tighten_pacing and everything else work on it as on one video), and call
+switch_angles to cut between the cameras. set_angle puts a specific camera on a moment ("the close-up when I say
+the price"). Say which camera's sound was used and why.
+
+Caption fonts and important words: when the user asks for a caption font or look ("comic font", "handwritten",
+"elegant"), set_captions font with the closest match. When they want key or important words to stand out, read
+the captions (get_captions), choose the words that carry the meaning (names, numbers, results, strong verbs and
+adjectives; about one per caption line, never filler) and pass them as emphasis_words, with an emphasis_font that
+contrasts with the caption font (and emphasis_numbers for figures). Mention which words you emphasised.
+
+Plans: some features depend on the user's plan (Free, Basic, Pro). When a tool result says "Plan limit", don't
+retry or work around it: do what the plan allows, and tell the user plainly which plan unlocks the rest (the
+Upgrade button). Never claim something was done when a plan limit stopped it.
+
+Effects: add_effect for video noise removal (grainy or dark footage), film grain (a filmic or vintage look) and blur
+(the whole picture, e.g. behind a title, or a region to hide something). "Remove noise" in the sound (hiss, hum, room
+noise) is set_audio_polish denoise; if it's unclear which the user means, do the sound and say video noise removal
+is also available.
 
 Not available yet: speed changes, AI-generated music, images or voice, stock footage, face-tracking reframes, per-clip colour, motion graphics beyond the text animations offered.
 If the user asks for these, do the parts you can and say plainly what is not supported yet.
@@ -123,12 +149,14 @@ class EditSession:
 
     def __init__(self, project_id: str):
         self.project_id = project_id
+        self.owner = store.project_owner(project_id) or ""        # whose plan limits apply
         self.assets = {a["id"]: a for a in store.list_assets(project_id)}
         row = store.get_timeline(project_id)
         self.base_version: int | None = row["version"] if row else None
         self.draft: dict | None = row["data"] if row else None
         self.pending_output: dict | None = None
         self.changed = False
+        self.provider: LLMProvider | None = None       # set by run(); tools that need their own model call use it
         self._transcripts: dict[str, dict | None] = {}
         self._silences: dict[tuple, list] = {}
 
@@ -171,6 +199,7 @@ class EditSession:
         except ValidationError as exc:
             return None, [f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()]
         problems = check_assets(tl, self.assets, self.project_id)
+        problems += [f"Plan limit: {p}" for p in billing.timeline_problems(self.owner, tl, self.assets)]
         return (tl if not problems else None), problems
 
     def _commit(self, data: dict) -> dict:
@@ -198,7 +227,8 @@ class EditSession:
             ],
             **({"clips_truncated": len(clips) - 80} if len(clips) > 80 else {}),
         }
-        for key in ("grade", "captions", "text", "overlays", "audio", "broll", "zooms", "stickers", "audio_polish"):
+        for key in ("grade", "captions", "text", "overlays", "audio", "broll", "zooms", "stickers", "effects",
+                    "audio_polish"):
             if self.draft.get(key):
                 summary[key] = self.draft[key]
         warnings = layer_warnings(tl)
@@ -208,7 +238,7 @@ class EditSession:
 
     def new_id(self, prefix: str, reserved: set[str] | None = None) -> str:
         """A layer id not used on the draft (nor in `reserved`, for ids handed out before a commit)."""
-        taken = {x["id"] for key in ("clips", "text", "overlays", "audio", "broll", "zooms", "stickers")
+        taken = {x["id"] for key in ("clips", "text", "overlays", "audio", "broll", "zooms", "stickers", "effects")
                  for x in (self.draft or {}).get(key, [])} | (reserved or set())
         n = 1
         while f"{prefix}{n}" in taken:
@@ -244,9 +274,18 @@ def tool_list_assets(s: EditSession) -> dict:
             "has_audio": bool(a.get("has_audio")), "transcript": a.get("transcript_status"),
             "role": a.get("role", "footage"),
             **({"style_analysis": a.get("analysis_status")} if a.get("role") == "reference" else {}),
+            **({"multicam": _multicam_summary(a)} if a.get("kind") == "multicam" else {}),
         }
         for a in s.assets.values()
     ]}
+
+
+def _multicam_summary(a: dict) -> dict:
+    mc = store.get_analysis(a["id"]) or {}
+    return {"angles": [{"angle": i, "label": x.get("label"), "shows": x.get("description"),
+                        "camera_file": (store.get_asset(x["asset_id"]) or {}).get("filename")}
+                       for i, x in enumerate(mc.get("angles", []))],
+            "sound_from": (mc.get("audio") or {}).get("reason")}
 
 
 def tool_get_timeline(s: EditSession) -> dict:
@@ -483,13 +522,33 @@ def _drop_none(d: dict) -> dict:
 
 def tool_set_captions(s: EditSession, enabled: bool = True, style: str | None = None, position: str | None = None,
                       size: float | None = None, color: str | None = None, highlight_color: str | None = None,
-                      uppercase: bool | None = None, max_words: int | None = None) -> dict:
+                      uppercase: bool | None = None, max_words: int | None = None, font: str | None = None,
+                      emphasis_words: list[str] | None = None, emphasis_add: list[str] | None = None,
+                      emphasis_numbers: bool | None = None, emphasis_font: str | None = None,
+                      emphasis_color: str | None = None, emphasis_size: float | None = None,
+                      emphasis_uppercase: bool | None = None, emphasis_off: bool = False) -> dict:
     draft = s.require_draft()
     if not enabled:
         return s._commit({k: v for k, v in draft.items() if k != "captions"})
     caps = {**(draft.get("captions") or {}), **_drop_none(dict(
         style=style, position=position, size=size, color=color, highlight_color=highlight_color,
         uppercase=uppercase, max_words=max_words))}
+    if font == "default":
+        caps.pop("font", None)
+    elif font:
+        caps["font"] = font
+    if emphasis_off:
+        caps.pop("emphasis", None)
+    else:
+        emp = dict(caps.get("emphasis") or {})
+        if emphasis_words is not None:
+            emp["words"] = emphasis_words
+        if emphasis_add:
+            emp["words"] = [*emp.get("words", []), *emphasis_add]
+        emp.update(_drop_none(dict(numbers=emphasis_numbers, font=emphasis_font, color=emphasis_color,
+                                   size=emphasis_size, uppercase=emphasis_uppercase)))
+        if emp:
+            caps["emphasis"] = emp
     result = s._commit({**draft, "captions": caps})
     missing = sorted({s.assets[c["asset_id"]].get("filename") or c["asset_id"]
                       for c in draft["clips"] if not s.words(c["asset_id"])})
@@ -549,10 +608,10 @@ def tool_set_grade(s: EditSession, preset: str | None = None, brightness: float 
 
 def tool_add_text(s: EditSession, text: str, start: float, end: float, style: str = "title",
                   position: str = "center", animation: str = "fade", size: float = 1.0,
-                  color: str = "#FFFFFF") -> dict:
+                  color: str = "#FFFFFF", font: str | None = None) -> dict:
     draft = s.require_draft()
-    layer = {"id": s.new_id("text"), "text": text, "start": start, "end": end, "style": style,
-             "position": position, "animation": animation, "size": size, "color": color}
+    layer = _drop_none({"id": s.new_id("text"), "text": text, "start": start, "end": end, "style": style,
+                        "position": position, "animation": animation, "size": size, "color": color, "font": font})
     result = s._commit({**draft, "text": [*draft.get("text", []), layer]})
     return {"layer_id": layer["id"], **result} if result.get("ok") else result
 
@@ -581,11 +640,11 @@ def tool_add_audio(s: EditSession, asset_id: str, start: float = 0, source_in: f
 
 def tool_remove_layer(s: EditSession, layer_id: str) -> dict:
     draft = s.require_draft()
-    for key in ("text", "overlays", "audio", "broll", "zooms", "stickers"):
+    for key in ("text", "overlays", "audio", "broll", "zooms", "stickers", "effects"):
         layers = draft.get(key, [])
         if any(x["id"] == layer_id for x in layers):
             return s._commit({**draft, key: [x for x in layers if x["id"] != layer_id]})
-    raise ToolInputError(f"No text, overlay, audio, B-roll, zoom or sticker layer with id {layer_id!r}")
+    raise ToolInputError(f"No text, overlay, audio, B-roll, zoom, sticker or effect layer with id {layer_id!r}")
 
 
 def tool_get_captions(s: EditSession, start: float = 0, end: float | None = None) -> dict:
@@ -630,16 +689,28 @@ _register(tool_edit_captions,
 _POSITIONS = ["top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"]
 _COLOR = {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "description": "Hex colour like #FFD23F"}
 
+_FONTS = list(typefaces.FONT_IDS)
 _register(tool_set_captions,
           "Turn on word-by-word captions from the transcript, change their look, or turn them off (enabled=false). "
           "Styles: karaoke (current word highlighted), pop (1-2 big uppercase words), boxed (text on a dark box), "
-          "minimal (plain subtitles). Only the fields you pass are changed.",
+          "minimal (plain subtitles). font changes the caption font ('default' = the style's own). Emphasis draws "
+          "important words in their own font, colour and size wherever they are said: emphasis_words replaces the "
+          "list, emphasis_add adds to it (words or short phrases exactly as spoken), emphasis_numbers also "
+          "emphasises numbers, prices and percentages, emphasis_off removes it. Fonts: " + typefaces.describe()
+          + ". Only the fields you pass are changed.",
           {"enabled": {"type": "boolean"},
            "style": {"type": "string", "enum": ["karaoke", "pop", "boxed", "minimal"]},
            "position": {"type": "string", "enum": ["top", "middle", "bottom"]},
            "size": {"type": "number", "minimum": 0.5, "maximum": 2},
            "color": _COLOR, "highlight_color": _COLOR, "uppercase": {"type": "boolean"},
-           "max_words": {"type": "integer", "minimum": 1, "maximum": 10}})
+           "max_words": {"type": "integer", "minimum": 1, "maximum": 10},
+           "font": {"type": "string", "enum": [*_FONTS, "default"]},
+           "emphasis_words": {"type": "array", "items": {"type": "string", "maxLength": 60}, "maxItems": 100},
+           "emphasis_add": {"type": "array", "items": {"type": "string", "maxLength": 60}, "maxItems": 100},
+           "emphasis_numbers": {"type": "boolean"},
+           "emphasis_font": {"type": "string", "enum": _FONTS},
+           "emphasis_color": _COLOR, "emphasis_size": {"type": "number", "minimum": 0.8, "maximum": 2},
+           "emphasis_uppercase": {"type": "boolean"}, "emphasis_off": {"type": "boolean"}})
 _register(tool_set_transitions,
           "Set the transition into the given clips (default: every cut). type 'none' makes them hard cuts. "
           "Durations are shortened automatically for short clips.",
@@ -668,7 +739,9 @@ _register(tool_add_text,
            "style": {"type": "string", "enum": ["title", "label", "lower_third"]},
            "position": {"type": "string", "enum": _POSITIONS},
            "animation": {"type": "string", "enum": ["none", "fade", "pop", "slide_up", "typewriter"]},
-           "size": {"type": "number", "minimum": 0.3, "maximum": 3}, "color": _COLOR},
+           "size": {"type": "number", "minimum": 0.3, "maximum": 3}, "color": _COLOR,
+           "font": {"type": "string", "enum": list(typefaces.FONT_IDS),
+                    "description": "Optional font (see set_captions for the list)"}},
           ["text", "start", "end"])
 _register(tool_add_overlay,
           "Place one of the user's images or videos over the video at output time [start, end], e.g. a logo or "
@@ -711,16 +784,28 @@ def tool_get_reference_style(s: EditSession, asset_id: str) -> dict:
             "suggestions": profile.get("suggestions")}
 
 
+def _picture(s: EditSession, clip: dict) -> tuple[str, float] | None:
+    """(asset id, time shift) of the video a clip shows: itself, or the chosen angle of a multicam clip."""
+    a = s.assets.get(clip["asset_id"])
+    if not a:
+        return None
+    if a.get("kind") == "multicam":
+        from . import multicam
+
+        return multicam.angle_source(a, clip.get("angle"))
+    return (clip["asset_id"], 0.0) if a.get("kind") in ("video", "image") else None
+
+
 def _footage_frames(s: EditSession, clips: list[dict]):
     import numpy as np
 
     by_asset: dict[str, list[float]] = {}
     for c in clips[:16]:
-        a = s.assets.get(c["asset_id"])
-        if not a or a.get("kind") not in ("video", "image"):
+        pic = _picture(s, c)
+        if not pic:
             continue
         length = c["out"] - c["in"]
-        by_asset.setdefault(c["asset_id"], []).extend([c["in"] + length * 0.3, c["in"] + length * 0.7])
+        by_asset.setdefault(pic[0], []).extend([c["in"] + pic[1] + length * 0.3, c["in"] + pic[1] + length * 0.7])
     stacks = [analysis.frames_at(storage.path(s.assets[aid]["storage_key"]), times) for aid, times in by_asset.items()]
     if not stacks:
         raise ToolInputError("The timeline has no video frames to analyse.")
@@ -964,6 +1049,11 @@ def tool_generate_broll_image(s: EditSession, prompt: str, orientation: str | No
     """Generate an AI still for B-roll (about 10-30 s); returns its asset_id for add_broll."""
     from . import genimage
 
+    try:
+        billing.check_feature(s.owner, "ai_images")
+    except billing.PlanLimit as exc:
+        return {"error": f"Plan limit: {exc}"}
+
     owner = next(iter(s.assets.values()))["user_id"] if s.assets else None
     if owner is None:
         raise ToolInputError("Add footage first.")
@@ -985,6 +1075,72 @@ def tool_generate_broll_image(s: EditSession, prompt: str, orientation: str | No
     s.assets[asset["id"]] = store.get_asset(asset["id"])
     return {"asset_id": asset["id"], "kind": "image", "width": info["width"], "height": info["height"],
             "note": "A still: place it with add_broll and a motion (push_in or a pan) so it moves."}
+
+
+def tool_plan_broll(s: EditSession, count: int | None = None, wishes: str = "", place: bool = True) -> dict:
+    """Read the transcript, pick B-roll moments with stock search keywords, check thumbnails, and place them."""
+    from . import broll, brollplan
+
+    draft = s.require_draft()
+    if not broll.stock_available():
+        return {"error": "No stock footage source is set up (needs PIXABAY_API_KEY). Use generate_broll_image "
+                         "or the user's own B-roll instead."}
+    if s.provider is None or not hasattr(s.provider, "vision_json"):
+        return {"error": "B-roll planning needs the language model; place B-roll by hand with search_stock_broll."}
+    tl = Timeline.model_validate(draft)
+    cap = billing.limits(s.owner)["max_broll"]
+    if cap is not None:
+        room = cap - len(draft.get("broll", []))
+        if room <= 0:
+            return {"error": f"Plan limit: your plan allows {cap} B-roll cutaway per project and it's used. "
+                             "Upgrade to Basic for more."}
+        count = min(count or room, room)
+    words = captions_mod.output_words(Timeline.model_validate({**tl.to_json(), "captions": {"style": "minimal"}}),
+                                      {c.asset_id: s.transcript(c.asset_id) for c in tl.clips})
+    if not words:
+        return {"error": "There's no transcript to plan B-roll from."}
+    o = draft["output"]
+    orientation = "portrait" if o["height"] > o["width"] else "square" if o["height"] == o["width"] else "landscape"
+    taken = [(b["start"], b["start"] + b["duration"]) for b in draft.get("broll", [])]
+    ask = s.provider.vision_json
+    try:
+        topic, moments = brollplan.plan(words, tl.duration, ask, count, taken, wishes)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"Couldn't plan B-roll: {exc}"}
+    report = []
+    for m in moments:
+        if not m.skipped:
+            brollplan.choose(m, orientation, ask)
+        item = {"words": m.quote, "shows": m.visual, "search_keywords": m.queries}
+        if m.skipped:
+            report.append({**item, "skipped": m.skipped})
+            continue
+        item.update(start=m.start, duration=round(m.duration, 2),
+                    shown=f"{brollplan.mmss(m.start)}-{brollplan.mmss(m.end)} (write times like this)",
+                    keyword_used=m.query_used,
+                    stock_id=f"{m.choice['provider']}-{m.choice['id']}", stock_tags=m.choice.get("tags"),
+                    match_score=m.score)
+        if place:
+            added = tool_add_stock_broll(s, item["stock_id"], description=m.visual)
+            if "error" in added:
+                report.append({**item, "skipped": added["error"]})
+                continue
+            src_len = added.get("duration_seconds") or m.duration
+            source_in = round(max(0.0, min(src_len - m.duration, src_len * 0.25)), 2)
+            try:
+                placed = tool_add_broll(s, added["asset_id"], m.start, m.duration, source_in=source_in, motion="none")
+            except ToolInputError as exc:
+                placed = {"error": str(exc)}
+            if not placed.get("ok"):
+                report.append({**item, "skipped": str(placed.get("error") or placed.get("errors"))})
+                continue
+            item.update(layer_id=placed.get("layer_id"), credit=added.get("credit"))
+        report.append(item)
+    done = [r for r in report if "skipped" not in r]
+    return {"topic": topic, "placed" if place else "planned": done,
+            "skipped": [r for r in report if "skipped" in r],
+            "note": ("B-roll is done: don't add more cutaways or reuse other images on top of these unless the user "
+                     "asks. Stock clips come from Pixabay; credit is shown automatically.") if done and place else None}
 
 
 def tool_add_broll(s: EditSession, asset_id: str, start: float, duration: float, source_in: float = 0,
@@ -1085,7 +1241,8 @@ def tool_emphasize(s: EditSession, items: list[dict]) -> dict:
             text.append({"id": s.new_id("kw", reserved), "text": label, "start": round(max(0, start - 0.03), 3),
                          "end": round(min(max(end + 0.45, start + 0.8), start + 1.6), 3), "style": "keyword",
                          "position": item.get("position", "center"), "animation": "pop",
-                         "color": item.get("color", "#FFD23F"), "size": 1.0})
+                         "color": item.get("color", "#FFD23F"), "size": 1.0,
+                         **({"font": item["font"]} if item.get("font") else {})})
         under_broll = any(a < end and start < b for a, b in covered)
         if item.get("zoom", True) and under_broll:
             notes.append(f"No zoom on “{phrase}”: B-roll covers the speaker there.")
@@ -1123,6 +1280,40 @@ def tool_add_zoom(s: EditSession, start: float, end: float, scale: float = 1.15,
     layer = {"id": s.new_id("zoom"), "start": round(start, 3), "end": round(end, 3), "scale": scale, "focus_y": focus_y}
     result = s._commit({**draft, "zooms": [*draft.get("zooms", []), layer]})
     return {"layer_id": layer["id"], **result} if result.get("ok") else result
+
+
+def tool_add_effect(s: EditSession, type: str, start: float = 0, end: float | None = None, strength: float = 0.5,
+                    region: dict | None = None) -> dict:
+    draft = s.require_draft()
+    layer = _drop_none({"id": s.new_id(type), "type": type, "start": round(start, 3),
+                        "end": None if end is None else round(end, 3), "strength": strength, "region": region})
+    result = s._commit({**draft, "effects": [*draft.get("effects", []), layer]})
+    return {"layer_id": layer["id"], "ok": True} if result.get("ok") else result
+
+
+def tool_update_effect(s: EditSession, layer_id: str, strength: float | None = None, start: float | None = None,
+                       end: float | None = None, whole_video: bool = False, region: dict | None = None,
+                       whole_frame: bool = False) -> dict:
+    draft = s.require_draft()
+    effects = [dict(e) for e in draft.get("effects", [])]
+    fx = next((e for e in effects if e["id"] == layer_id), None)
+    if fx is None:
+        raise ToolInputError(f"No effect with id {layer_id!r}; see get_timeline (effects).")
+    if strength is not None:
+        fx["strength"] = strength
+    if whole_video:
+        fx["start"] = 0
+        fx.pop("end", None)
+    if start is not None:
+        fx["start"] = round(start, 3)
+    if end is not None:
+        fx["end"] = round(end, 3)
+    if whole_frame:
+        fx.pop("region", None)
+    elif region is not None:
+        fx["region"] = region
+    result = s._commit({**draft, "effects": effects})
+    return {"layer_id": layer_id, "ok": True, "effect": fx} if result.get("ok") else result
 
 
 def tool_add_sound_effect(s: EditSession, sound: str, start: float, volume: float = 0.6) -> dict:
@@ -1192,6 +1383,8 @@ _register(tool_emphasize,
                              "zoom_scale": {"type": "number", "minimum": 1.05, "maximum": 1.4},
                              "sound": {"type": ["string", "null"], "enum": [*_SFX, None]},
                              "emoji": {"type": "string", "description": "Animated emoji shown above the word, e.g. 🔥"},
+                             "font": {"type": "string", "enum": list(typefaces.FONT_IDS),
+                                      "description": "Font for the keyword (default Anton)"},
                              "position": {"type": "string", "enum": ["center", "bottom", "top"]},
                              "color": {"type": "string", "pattern": "^#[0-9a-fA-F]{6}$"}},
               "required": ["phrase"], "additionalProperties": False}}},
@@ -1199,6 +1392,30 @@ _register(tool_emphasize,
 _register(tool_add_zoom, "Quick punch-in on the speaker between output times start and end (scale 1.05-1.6).",
           {"start": _NUM, "end": _NUM, "scale": {"type": "number", "minimum": 1.03, "maximum": 1.6},
            "focus_y": {"type": "number", "minimum": 0, "maximum": 1}}, ["start", "end"])
+_register(tool_add_effect,
+          "Add a picture effect from output time start to end (omit end for the rest of the video; start 0 and no end "
+          "= the whole video). denoise = video noise removal for grainy or low-light footage (for hiss or room "
+          "noise in the sound use set_audio_polish denoise instead); grain = film grain for a filmic or vintage look "
+          "(0.2-0.4 is subtle); blur = blur the picture, or only region {x, y, w, h} (fractions of the frame from the "
+          "top-left) to hide something such as a face, a screen or a number plate. strength 0.05-1; for blur it is "
+          "the blur level: light 0.2, medium 0.5 (default), strong 0.8, maximum 1 (match what the user asks for, e.g. "
+          "'a slight blur' = light, 'blur it completely' = maximum). Change an existing effect with update_effect. "
+          "Remove with remove_layer.",
+          {"type": {"type": "string", "enum": ["denoise", "grain", "blur"]}, "start": _NUM, "end": _NUM,
+           "strength": {"type": "number", "minimum": 0.05, "maximum": 1},
+           "region": {"type": "object", "additionalProperties": False, "required": ["x", "y", "w", "h"],
+                      "properties": {k: {"type": "number", "minimum": 0, "maximum": 1} for k in "xywh"}}},
+          ["type"])
+_register(tool_update_effect,
+          "Change an effect already on the timeline (layer_id from get_timeline): strength (for blur, the blur level: "
+          "light 0.2, medium 0.5, strong 0.8, maximum 1; 'more blur' = raise it), its time range (start/end, or "
+          "whole_video), or for blur its region (region, or whole_frame to blur everything).",
+          {"layer_id": {"type": "string"}, "strength": {"type": "number", "minimum": 0.05, "maximum": 1},
+           "start": _NUM, "end": _NUM, "whole_video": {"type": "boolean"},
+           "region": {"type": "object", "additionalProperties": False, "required": ["x", "y", "w", "h"],
+                      "properties": {k: {"type": "number", "minimum": 0, "maximum": 1} for k in "xywh"}},
+           "whole_frame": {"type": "boolean"}},
+          ["layer_id"])
 _register(tool_add_sound_effect,
           "Play a built-in sound at output time start: whoosh (cuts, cutaways), swipe (fast cuts, text sliding), "
           "riser (build-up before a reveal, ~1.5 s, start it before the moment), pop (text), ding (key point), "
@@ -1294,11 +1511,12 @@ def tool_set_background(s: EditSession, replace_with: str, clip_ids: list[str] |
                          "blur": blur if replace_with == "blur" else None})
         use = method
         if method in ("auto", "chroma"):
-            if c["asset_id"] not in screens:
-                a = s.assets.get(c["asset_id"]) or {}
-                screens[c["asset_id"]] = (matte.screen_color(storage.path(a["storage_key"]), c["in"] + 0.5)
-                                          if a.get("storage_key") and a.get("kind") == "video" else None)
-            key = screens[c["asset_id"]]
+            pic = _picture(s, c)
+            if pic and pic[0] not in screens:
+                a = s.assets.get(pic[0]) or {}
+                screens[pic[0]] = (matte.screen_color(storage.path(a["storage_key"]), c["in"] + pic[1] + 0.5)
+                                   if a.get("storage_key") and a.get("kind") == "video" else None)
+            key = screens.get(pic[0]) if pic else None
             if key:
                 use = "chroma"
                 bg.update(method="chroma", key_color=key)
@@ -1306,17 +1524,16 @@ def tool_set_background(s: EditSession, replace_with: str, clip_ids: list[str] |
                 return {"error": f"Clip {c['id']} doesn't look like a green or blue screen; use method ai."}
             else:
                 use = "ai"
-        if use == "ai":
-            matte_seconds += c["out"] - c["in"]
+        # measured on an 8-core CPU: AI cut-out ~9 s, colour key ~2 s per second of footage (cached after)
+        matte_seconds += (c["out"] - c["in"]) * (9 if use == "ai" else 2)
         new.append({**c, "background": bg})
         report.append({"clip_id": c["id"], "method": "green/blue screen key" if use == "chroma" else "AI cut-out"})
     result = s._commit({**draft, "clips": new})
     if not result.get("ok"):
         return result
     out = {"ok": True, "clips": report}
-    if matte_seconds:
-        # about 15 matte frames a second of footage at roughly 0.4 s each on a CPU; cached afterwards
-        out["note"] = (f"The first preview takes about {max(1, round(matte_seconds * 15 * 0.4 / 60))} min longer "
+    if matte_seconds >= 30:
+        out["note"] = (f"The first preview takes about {max(1, round(matte_seconds / 60))} min longer "
                        "while the person is cut out; later previews reuse it.")
     return out
 
@@ -1334,6 +1551,210 @@ _register(tool_set_background,
            "blur": {"type": "number", "minimum": 0.05, "maximum": 1},
            "method": {"type": "string", "enum": ["auto", "ai", "chroma"]}},
           ["replace_with"])
+
+
+_register(tool_plan_broll,
+          "Plan and add stock B-roll from the transcript: reads the whole edit, picks the moments a cutaway would "
+          "show something concrete, writes search keywords for each, searches stock (Pixabay), checks the clips' "
+          "thumbnails with vision and places only clear matches (1.5-4 s each, not in the opening hook, at most a "
+          "third of the video). count = how many cutaways (default about one per 12 s). wishes = the user's own "
+          "words about the B-roll (topics, things to show). place=false only returns the plan.",
+          {"count": {"type": "integer", "minimum": 1, "maximum": 12},
+           "wishes": {"type": "string", "maxLength": 400}, "place": {"type": "boolean"}})
+def tool_create_multicam(s: EditSession, asset_ids: list[str], audio_asset_id: str | None = None) -> dict:
+    """Sync 2-3 camera angles of the same take (and an optional separate audio file) into one source."""
+    from . import multicam
+
+    try:
+        billing.check_angles(s.owner, len(set(asset_ids)))
+    except billing.PlanLimit as exc:
+        return {"error": f"Plan limit: {exc}"}
+    vision = s.provider.vision_json if s.provider is not None and hasattr(s.provider, "vision_json") else None
+    try:
+        asset = multicam.create(s.project_id, asset_ids, audio_asset_id, vision)
+    except multicam.MulticamError as exc:
+        return {"error": str(exc)}
+    s.assets[asset["id"]] = asset
+    s._transcripts.pop(asset["id"], None)
+    mc = store.get_analysis(asset["id"]) or {}
+    return {"asset_id": asset["id"], "duration_seconds": asset["duration"],
+            "angles": [{"angle": i, "label": x["label"], "shows": x.get("description")}
+                       for i, x in enumerate(mc.get("angles", []))],
+            "sound_from": mc["audio"]["reason"],
+            "transcript": asset.get("transcript_status"),
+            "next": "Build the edit on this asset_id (set_timeline, tighten_pacing) instead of the single cameras, "
+                    "then switch_angles to cut between the cameras."}
+
+
+def _clip_spans(draft: dict) -> list[tuple[float, float]]:
+    return Timeline.model_validate(draft).clip_spans()
+
+
+def _split_at(s: EditSession, draft: dict, times: list[float]) -> list[dict]:
+    """Clips with multicam clips split at the given output times (pictures only change; sound is continuous)."""
+    clips, spans = draft["clips"], _clip_spans(draft)
+    reserved: set[str] = set()
+    out = []
+    for c, (a, b) in zip(clips, spans):
+        is_mc = (s.assets.get(c["asset_id"]) or {}).get("kind") == "multicam"
+        cuts = sorted(t for t in times if is_mc and a + 0.3 < t < b - 0.3)
+        if not cuts:
+            out.append(c)
+            continue
+        edges = [c["in"]] + [round(c["in"] + (t - a), 3) for t in cuts] + [c["out"]]
+        for k in range(len(edges) - 1):
+            piece = {**c, "in": edges[k], "out": edges[k + 1]}
+            if k:
+                piece["id"] = s.new_id("clip", reserved)
+                piece.pop("transition_in", None)
+            out.append(piece)
+    return out
+
+
+def _merge_same_angle(clips: list[dict]) -> list[dict]:
+    """Join back-to-back pieces of one multicam take that show the same angle (a cut to the same shot is a jump)."""
+    out: list[dict] = []
+    for c in clips:
+        prev = out[-1] if out else None
+        if (prev is not None and c.get("angle") is not None and not c.get("transition_in")
+                and prev["asset_id"] == c["asset_id"] and abs(prev["out"] - c["in"]) < 1e-3
+                and {k: v for k, v in prev.items() if k not in ("id", "in", "out", "transition_in")}
+                == {k: v for k, v in c.items() if k not in ("id", "in", "out", "transition_in")}):
+            out[-1] = {**prev, "out": c["out"]}
+        else:
+            out.append(dict(c))
+    return out
+
+
+def _angle_order(s: EditSession, asset_id: str) -> list[int]:
+    angles = (store.get_analysis(asset_id) or {}).get("angles", [])
+    order = list(range(len(angles)))
+    wide = [i for i, x in enumerate(angles) if "wide" in (x.get("label") or "").lower()]
+    return wide[:1] + [i for i in order if i not in wide[:1]]
+
+
+def tool_switch_angles(s: EditSession, min_seconds: float = 2.5, max_seconds: float = 6.0,
+                       start: float = 0, end: float | None = None) -> dict:
+    """Cut between the multicam angles at natural pauses, every few seconds, never the same angle twice."""
+    draft = s.require_draft()
+    mc_clips = [c for c in draft["clips"] if (s.assets.get(c["asset_id"]) or {}).get("kind") == "multicam"]
+    if not mc_clips:
+        return {"error": "No multicam clips on the timeline. Use create_multicam, then build the edit on it."}
+    if max_seconds < min_seconds + 0.5:
+        max_seconds = min_seconds + 0.5
+    spans = _clip_spans(draft)
+    cuts: list[float] = []
+    for c, (a, b) in zip(draft["clips"], spans):
+        if c not in mc_clips:
+            continue
+        lo, hi = max(a, start), min(b, end if end is not None else b)
+        if hi - lo < min_seconds:
+            continue
+        words = s.words(c["asset_id"])
+        # candidate cut points in output time: between sentences/phrases first, then between any words
+        to_out = lambda t: a + (t - c["in"])  # noqa: E731
+        strong, weak = [], []
+        for w0, w1 in zip(words, words[1:]):
+            if not (c["in"] < w0["end"] and w1["start"] < c["out"]):
+                continue
+            gap_mid = to_out((w0["end"] + w1["start"]) / 2)
+            text = (w0.get("word") or w0.get("text") or "").strip()
+            (strong if text.endswith((".", "!", "?", ",", ";", ":")) or w1["start"] - w0["end"] > 0.25
+             else weak).append(gap_mid)
+        t = lo
+        while hi - t > max_seconds:
+            target = t + (min_seconds + max_seconds) / 2
+            pick = [x for x in strong if t + min_seconds <= x <= t + max_seconds and hi - x >= min_seconds * 0.6]
+            if not pick:
+                pick = [x for x in weak if t + min_seconds <= x <= t + max_seconds and hi - x >= min_seconds * 0.6]
+            nxt = min(pick, key=lambda x: abs(x - target)) if pick else t + max_seconds
+            cuts.append(round(nxt, 3))
+            t = nxt
+        if start > a + 0.3:
+            cuts.append(round(start, 3))
+        if end is not None and end < b - 0.3:
+            cuts.append(round(end, 3))
+    clips = _split_at(s, draft, cuts)
+    spans2 = _clip_spans({**draft, "clips": clips})
+    used: list[int] = []
+    shots = 0
+    shot_len = 0.0
+    prev = None
+    for c, (a, b) in zip(clips, spans2):
+        is_mc = (s.assets.get(c["asset_id"]) or {}).get("kind") == "multicam"
+        outside = b <= start + 0.01 or (end is not None and a >= end - 0.01)
+        if not is_mc or outside:
+            if is_mc and c.get("angle") is not None:
+                used.append(c["angle"])
+            prev, shot_len = (c if is_mc else None), 0.0
+            continue
+        # A new camera when the shot has run long enough, or at a jump cut (switching hides it) once the
+        # shot has lasted a second; tiny pieces left by pause removal keep the camera they're on.
+        jump = prev is not None and prev["asset_id"] == c["asset_id"] and abs(prev["out"] - c["in"]) > 1e-3
+        if used and not (shot_len >= min_seconds or (jump and shot_len >= 1.0)):
+            c["angle"] = used[-1]
+            shot_len += b - a
+            prev = c
+            continue
+        order = _angle_order(s, c["asset_id"])
+        if not used:
+            choice = order[0]
+        else:
+            # the angle not seen for longest, never the one just shown
+            last_seen = {i: (max(k for k, u in enumerate(used) if u == i) if i in used else -1) for i in order}
+            options = [i for i in order if i != used[-1]] or order
+            choice = min(options, key=lambda i: last_seen[i])
+        c["angle"] = choice
+        used.append(choice)
+        shots += 1
+        shot_len = b - a
+        prev = c
+    clips = _merge_same_angle(clips)
+    result = s._commit({**draft, "clips": clips})
+    if not result.get("ok"):
+        return result
+    labels = {i: x.get("label") for i, x in enumerate((store.get_analysis(mc_clips[0]["asset_id"]) or {}).get("angles", []))}
+    return {"ok": True, "shots": shots, "sequence": [labels.get(u, u) for u in used][:40],
+            "duration_seconds": result.get("duration_seconds")}
+
+
+def tool_set_angle(s: EditSession, angle: int, start: float, end: float) -> dict:
+    """Show one multicam angle from output time start to end."""
+    draft = s.require_draft()
+    if end - start < 0.3:
+        raise ToolInputError("The range must be at least 0.3 s long.")
+    clips = _split_at(s, draft, [start, end])
+    spans = _clip_spans({**draft, "clips": clips})
+    changed = 0
+    for c, (a, b) in zip(clips, spans):
+        if (s.assets.get(c["asset_id"]) or {}).get("kind") == "multicam" and a >= start - 0.05 and b <= end + 0.05:
+            c["angle"] = angle
+            changed += 1
+    if not changed:
+        return {"error": "No multicam clip is on screen in that range."}
+    clips = _merge_same_angle(clips)
+    result = s._commit({**draft, "clips": clips})
+    return {"ok": True, "clips_changed": changed} if result.get("ok") else result
+
+
+_register(tool_create_multicam,
+          "Sync 2-3 videos of the same take filmed from different angles into one multicam source: lines them up "
+          "(from their transcripts and audio), trims them to the same length and picks the clearest audio (or uses "
+          "audio_asset_id, a separate audio recording, when given). Returns the new asset_id, the angles and where "
+          "the sound comes from.",
+          {"asset_ids": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 3},
+           "audio_asset_id": {"type": "string"}}, ["asset_ids"])
+_register(tool_switch_angles,
+          "Cut between the camera angles of the multicam clips: a new angle every min_seconds to max_seconds "
+          "(default 2.5-6), at pauses between sentences or phrases, opening on the wide shot, never the same angle "
+          "twice in a row. start/end (output time) limit it to part of the video. The sound is unaffected.",
+          {"min_seconds": {"type": "number", "minimum": 1, "maximum": 20},
+           "max_seconds": {"type": "number", "minimum": 1.5, "maximum": 30}, "start": _NUM, "end": _NUM})
+_register(tool_set_angle,
+          "Show one multicam angle (0, 1 or 2, from list_assets) from output time start to end, e.g. the close-up "
+          "for a key line. Splits clips as needed; the sound is unaffected.",
+          {"angle": {"type": "integer", "minimum": 0, "maximum": 2}, "start": _NUM, "end": _NUM},
+          ["angle", "start", "end"])
 
 
 _register(tool_list_stickers, "List animated stickers: built-in callouts, emoji, and the user's uploaded Lottie animations.")
@@ -1406,6 +1827,7 @@ def tidy_reply(text: str) -> str:
 def run(provider: LLMProvider, project_id: str, user_message: str, history: list[dict],
         on_step: Callable[[int, str], None] | None = None) -> AgentResult:
     s = EditSession(project_id)
+    s.provider = provider
     tools = [spec for spec, _ in TOOLS.values()]
     messages: list[dict] = [
         {"role": m["role"], "content": m["content"]} for m in history[-HISTORY_MESSAGES:]

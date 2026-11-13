@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
-import { api } from '../lib/api';
+import { assetFileUrl, api } from '../lib/api';
 import { isActive, timecode } from '../lib/format';
 import StockSearch from './StockSearch';
+import MulticamSync from './MulticamSync';
 
 const ACCEPT_FOOTAGE =
   '.mp4,.mov,.mkv,.webm,.avi,.m4v,.flv,.mp3,.wav,.m4a,.aac,.ogg,.flac,.opus,.png,.jpg,.jpeg,.webp,.bmp,.cube,.json';
@@ -44,7 +45,10 @@ function assetStatus(asset, job) {
 
 function describe(asset) {
   const parts = [];
-  if (asset.kind) parts.push({ video: 'Video', audio: 'Audio', image: 'Image', lut: 'Colour LUT', lottie: 'Animation (sticker)' }[asset.kind]);
+  if (asset.kind) {
+    parts.push({ video: 'Video', audio: 'Audio', image: 'Image', lut: 'Colour LUT', lottie: 'Animation (sticker)',
+      multicam: `Multicam, ${asset.multicam?.angles?.length || ''} angles` }[asset.kind]);
+  }
   if (asset.duration) parts.push(timecode(asset.duration));
   if (asset.width && asset.height) parts.push(`${asset.width}×${asset.height}`);
   return parts.join(', ');
@@ -66,11 +70,39 @@ function styleFacts(style) {
   return facts;
 }
 
-function AssetRow({ asset, color, job, children }) {
+/** A small picture of the asset: a frame of a video, the image itself, or a mark for sound and other files. */
+function Thumb({ pid, asset, color }) {
+  const ready = asset.status === 'ready' && pid;
+  let inner = null;
+  if (ready && asset.kind === 'video') {
+    inner = <video src={`${assetFileUrl(pid, asset)}#t=0.8`} preload="metadata" muted playsInline tabIndex={-1} />;
+  } else if (ready && asset.kind === 'image') {
+    inner = <img src={assetFileUrl(pid, asset)} alt="" loading="lazy" />;
+  } else if (asset.kind === 'audio') {
+    inner = (
+      <svg viewBox="0 0 40 24" className="thumb-icon">
+        {[4, 10, 6, 14, 9, 18, 7, 12, 5].map((h, i) => (
+          <rect key={i} x={2 + i * 4.2} y={12 - h / 2} width="2.4" height={h} rx="1.2" />
+        ))}
+      </svg>
+    );
+  } else if (asset.kind === 'multicam') {
+    inner = <span className="thumb-label">{asset.multicam?.angles?.length || ''} cams</span>;
+  } else if (asset.kind) {
+    inner = <span className="thumb-label">{{ lut: 'LUT', lottie: 'Lottie' }[asset.kind] || ''}</span>;
+  }
+  return (
+    <span className="thumb" style={{ '--tape': color }} aria-hidden="true">
+      {inner}
+    </span>
+  );
+}
+
+function AssetRow({ asset, color, job, children, pid }) {
   const status = assetStatus(asset, job);
   return (
     <li className="asset">
-      <span className="swatch" style={{ background: color }} aria-hidden="true" />
+      <Thumb pid={pid} asset={asset} color={color} />
       <div className="asset-body">
         <span className="asset-name" title={asset.filename || asset.source_url}>
           {asset.filename || asset.source_url || 'Untitled'}
@@ -205,7 +237,7 @@ function GenerateImage({ project, act, enabled }) {
   );
 }
 
-export default function MediaBin({ project, jobs, colors, act, onAsk, canAsk, stockAvailable, stockProviders, aiImages }) {
+export default function MediaBin({ project, jobs, colors, act, onAsk, canAsk, stockAvailable, stockProviders, aiImages, billing }) {
   const [uploads, setUploads] = useState([]); // [{key, name, progress, role}]
 
   if (!project) return <aside className="panel media" aria-busy="true" />;
@@ -219,7 +251,7 @@ export default function MediaBin({ project, jobs, colors, act, onAsk, canAsk, st
   const out = project.timeline?.data?.output;
   const orientation = out ? (out.height > out.width ? 'portrait' : out.height === out.width ? 'square' : 'landscape') : '';
   const references = project.assets.filter((a) => a.role === 'reference');
-  const hasFootage = footage.some((a) => a.status === 'ready' && a.kind === 'video');
+  const hasFootage = footage.some((a) => a.status === 'ready' && (a.kind === 'video' || a.kind === 'multicam'));
 
   const uploadRows = (role) =>
     uploads
@@ -242,9 +274,16 @@ export default function MediaBin({ project, jobs, colors, act, onAsk, canAsk, st
       <ul className="asset-list">
         {uploadRows('footage')}
         {footage.map((a) => (
-          <AssetRow key={a.id} asset={a} color={colors[a.id]} job={ingestJobs[a.id]} />
+          <AssetRow key={a.id} pid={project.id} asset={a} color={colors[a.id]} job={ingestJobs[a.id]}>
+            {a.kind === 'multicam' && a.multicam && (
+              <span className="asset-status tone-muted">
+                {a.multicam.angles.map((x) => x.label).join(' · ')}. Sound: {a.multicam.audio?.reason}
+              </span>
+            )}
+          </AssetRow>
         ))}
       </ul>
+      <MulticamSync project={project} jobs={jobs} act={act} billing={billing} />
       {footage.length === 0 && !uploads.some((u) => u.role === 'footage') && (
         <p className="empty-hint">Your footage shows up here. Add at least one video to start editing.</p>
       )}
@@ -254,7 +293,7 @@ export default function MediaBin({ project, jobs, colors, act, onAsk, canAsk, st
       <ul className="asset-list">
         {uploadRows('broll')}
         {brolls.map((a) => (
-          <AssetRow key={a.id} asset={a} color={colors[a.id]} job={ingestJobs[a.id]}>
+          <AssetRow key={a.id} pid={project.id} asset={a} color={colors[a.id]} job={ingestJobs[a.id]}>
             {(a.source === 'pexels' || a.source === 'pixabay') && a.source_url && (
               <a className="stock-credit" href={a.source_url} target="_blank" rel="noreferrer">
                 View on {a.source === 'pexels' ? 'Pexels' : 'Pixabay'}
@@ -276,7 +315,7 @@ export default function MediaBin({ project, jobs, colors, act, onAsk, canAsk, st
           const facts = styleFacts(a.style);
           const name = a.filename || 'the reference';
           return (
-            <AssetRow key={a.id} asset={a} color="var(--line-strong)" job={ingestJobs[a.id]}>
+            <AssetRow key={a.id} pid={project.id} asset={a} color="var(--line-strong)" job={ingestJobs[a.id]}>
               {a.style && (
                 <div className="style-card">
                   {a.style.visual?.summary && <p className="style-summary">{a.style.visual.summary}</p>}

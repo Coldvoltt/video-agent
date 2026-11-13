@@ -58,6 +58,12 @@ const TOOL_LABELS = {
   list_stickers: 'Looking at stickers',
   add_sticker: 'Adding a sticker',
   set_background: 'Changing the background',
+  add_effect: 'Adding an effect',
+  update_effect: 'Adjusting an effect',
+  plan_broll: 'Planning B-roll from what you say',
+  create_multicam: 'Syncing the cameras',
+  switch_angles: 'Cutting between cameras',
+  set_angle: 'Choosing a camera',
 };
 
 /** Job messages look like "Working (tighten_pacing)"; show them in plain words. */

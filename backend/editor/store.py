@@ -86,6 +86,57 @@ CREATE TABLE IF NOT EXISTS editor_messages (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS editor_users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    name TEXT,
+    password_hash TEXT NOT NULL,
+    settings TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS editor_sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES editor_users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_editor_sessions_user ON editor_sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS editor_billing (
+    user_id TEXT PRIMARY KEY,
+    plan TEXT NOT NULL DEFAULT 'free',
+    coins INTEGER NOT NULL DEFAULT 0,
+    period_end TEXT,
+    free_month TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS editor_coin_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL,
+    delta INTEGER NOT NULL,
+    balance INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    ref TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_editor_ledger_user ON editor_coin_ledger(user_id, id);
+CREATE INDEX IF NOT EXISTS idx_editor_ledger_ref ON editor_coin_ledger(ref);
+
+CREATE TABLE IF NOT EXISTS editor_payments (
+    reference TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    amount REAL NOT NULL,
+    status TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    paid_at TIMESTAMP
+);
 CREATE INDEX IF NOT EXISTS idx_editor_messages_project ON editor_messages(project_id, id);
 CREATE INDEX IF NOT EXISTS idx_editor_projects_user ON editor_projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_editor_assets_project ON editor_assets(project_id);
@@ -176,6 +227,12 @@ def get_project(project_id: str, user_id: str) -> Optional[dict]:
             "SELECT * FROM editor_projects WHERE id = ? AND user_id = ?", (project_id, user_id)
         ).fetchone()
     return _row(row)
+
+
+def project_owner(project_id: str) -> Optional[str]:
+    with connect() as c:
+        row = c.execute("SELECT user_id FROM editor_projects WHERE id = ?", (project_id,)).fetchone()
+    return row["user_id"] if row else None
 
 
 def list_projects(user_id: str) -> list[dict]:

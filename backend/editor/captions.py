@@ -5,11 +5,13 @@ Coordinates use the timeline's output size (PlayResX/Y); libass scales them to t
 actual render size, so previews and finals look the same.
 """
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import typefaces
 from .edits import FILLER_WORDS, _norm
-from .timeline import Captions, TextLayer, Timeline, strip_markup
+from .timeline import CaptionEmphasis, Captions, TextLayer, Timeline, strip_markup
 
 FONTS_DIR = Path(__file__).parent / "fonts"
 BODY_FONT = "Montserrat ExtraBold"
@@ -26,6 +28,40 @@ STYLE_DEFAULTS = {
     "boxed":   (BODY_FONT,    1.15, 4,        0.00,   0.00,  True),
     "minimal": (BODY_FONT,    0.85, 6,        0.06,   0.02,  False),
 }
+
+
+_DEFAULT_ID = {BODY_FONT: "montserrat", DISPLAY_FONT: "anton"}
+
+
+def font_for(default: str, override: str | None) -> tuple[str, float]:
+    """(libass font name, size factor) for a style's default font or a chosen one, so a different
+    font comes out about the same size (fonts with tall line heights would otherwise draw small)."""
+    if not override:
+        return default, 1.0
+    base = _DEFAULT_ID.get(default, "montserrat")
+    return typefaces.ass_name(override), typefaces.em(base) / typefaces.em(override)
+
+
+_NUMBER = re.compile(r"\d|[$£€¥%]")
+
+
+def emphasised(words: list["TimedWord"], emp: CaptionEmphasis | None) -> set[int]:
+    """Indices of the words to emphasise: the listed words/phrases wherever said, and numbers if asked."""
+    if not emp:
+        return set()
+    norm = [_norm(w.text) for w in words]
+    out: set[int] = set()
+    for phrase in emp.words:
+        target = [t for t in (_norm(x) for x in phrase.split()) if t]
+        n = len(target)
+        if not n:
+            continue
+        for i in range(len(norm) - n + 1):
+            if norm[i:i + n] == target:
+                out.update(range(i, i + n))
+    if emp.numbers:
+        out.update(i for i, w in enumerate(words) if _NUMBER.search(w.text))
+    return out
 
 
 def ass_color(hex_color: str, alpha: int = 0) -> str:
@@ -155,6 +191,8 @@ def caption_lines(timeline: Timeline, transcripts: dict[str, dict | None]) -> li
     if not timeline.captions:
         return []
     words = output_words(timeline, transcripts)
+    marked = emphasised(words, timeline.captions.emphasis)
+    index = {id(w): i for i, w in enumerate(words)}
     lines = []
     for group, end in _timed_groups(timeline.captions, words, timeline.duration):
         lines.append({
@@ -165,6 +203,7 @@ def caption_lines(timeline: Timeline, transcripts: dict[str, dict | None]) -> li
             "src_start": round(min(w.src_start for w in group), 3),
             "src_end": round(max(w.src_end for w in group), 3),
             "edited": group[0].group_key is not None,
+            "emphasis": [j for j, w in enumerate(group) if index[id(w)] in marked],   # word positions in the line
         })
     return lines
 
@@ -222,9 +261,10 @@ class _Script:
 
 
 def _caption_events(s: _Script, cap: Captions, words: list[TimedWord], total: float) -> None:
-    font, rel, default_max, outline_k, shadow_k, boxed = STYLE_DEFAULTS[cap.style]
+    default_font, rel, default_max, outline_k, shadow_k, boxed = STYLE_DEFAULTS[cap.style]
+    font, factor = font_for(default_font, cap.font)
     base = min(s.w, s.h)
-    size = base * 0.075 * rel * cap.size
+    size = base * 0.075 * rel * cap.size * factor
     align = {"bottom": 2, "middle": 5, "top": 8}[cap.position]
     margin_v = int(s.h * (0.17 if cap.position == "bottom" else 0.10)) if cap.position != "middle" else 0
     side = int(s.w * 0.08)
@@ -237,23 +277,36 @@ def _caption_events(s: _Script, cap: Captions, words: list[TimedWord], total: fl
 
     hi = ass_color(cap.highlight_color)
     fmt = (lambda t: t.upper()) if cap.uppercase or cap.style == "pop" else (lambda t: t)
+    emp = cap.emphasis
+    marked = emphasised(words, emp)
+    index = {id(w): i for i, w in enumerate(words)}
+    if emp:
+        # emphasised words: own font, colour and size (scaled so the chosen size means the same in any font)
+        e_font = typefaces.ass_name(emp.font)
+        e_size = size / factor * typefaces.em(_DEFAULT_ID.get(default_font, "montserrat")) \
+            / typefaces.em(emp.font) * emp.size
+        e_col = ass_color(emp.color)
+
+    def word_text(w: TimedWord, current: bool) -> str:
+        text = fmt(w.text)
+        if index.get(id(w)) in marked:
+            text = text.upper() if emp.uppercase else text
+            grow = r"\fscx112\fscy112" if current and cap.style == "karaoke" else ""
+            return f"{{\\fn{e_font}\\fs{e_size:.0f}\\c{e_col}{grow}}}{text}{{\\r}}"
+        if current:
+            grow = r"\fscx112\fscy112" if cap.style == "karaoke" else ""
+            return f"{{\\c{hi}{grow}}}{text}{{\\r}}"
+        return text
+
     for group, g_end in _timed_groups(cap, words, total):
         if cap.style == "minimal" or len(group) > 12:
             # Long hand-edited lines read better without a word-by-word highlight.
-            s.event(group[0].start, g_end, "Caption", " ".join(fmt(w.text) for w in group))
+            s.event(group[0].start, g_end, "Caption", " ".join(word_text(w, False) for w in group))
             continue
         for wi, w in enumerate(group):
             start = group[0].start if wi == 0 else w.start
             end = group[wi + 1].start if wi + 1 < len(group) else g_end
-            parts = []
-            for j, other in enumerate(group):
-                word = fmt(other.text)
-                if j == wi:
-                    grow = r"\fscx112\fscy112" if cap.style == "karaoke" else ""
-                    parts.append(f"{{\\c{hi}{grow}}}{word}{{\\r}}")
-                else:
-                    parts.append(word)
-            text = " ".join(parts)
+            text = " ".join(word_text(other, j == wi) for j, other in enumerate(group))
             if cap.style == "pop" and wi == 0:
                 text = r"{\fscx70\fscy70\t(0,90,\fscx108\fscy108)\t(90,150,\fscx100\fscy100)}" + text
             s.event(start, end, "Caption", text)
@@ -281,21 +334,25 @@ def _text_events(s: _Script, layers: list[TextLayer], total: float) -> None:
         name = f"Text{i}"
         align = _ALIGN[t.position]
         if t.style == "title":
-            size = base * 0.16 * t.size
-            s.style(name, DISPLAY_FONT, size, ass_color(t.color), ass_color("#000000"), ass_color("#000000", 0x70),
+            font, k = font_for(DISPLAY_FONT, t.font)
+            size = base * 0.16 * t.size * k
+            s.style(name, font, size, ass_color(t.color), ass_color("#000000"), ass_color("#000000", 0x70),
                     1, size * 0.05, size * 0.04, align, int(margin))
         elif t.style == "label":
-            size = base * 0.07 * t.size
-            s.style(name, BODY_FONT, size, ass_color(t.color), ass_color("#000000"), ass_color("#000000", 0x70),
+            font, k = font_for(BODY_FONT, t.font)
+            size = base * 0.07 * t.size * k
+            s.style(name, font, size, ass_color(t.color), ass_color("#000000"), ass_color("#000000", 0x70),
                     1, size * 0.07, size * 0.03, align, int(margin))
         elif t.style == "keyword":   # a big word slammed on screen for emphasis
-            size = base * 0.3 * t.size
-            s.style(name, DISPLAY_FONT, size, ass_color(t.color), ass_color("#000000"), ass_color("#000000", 0x50),
+            font, k = font_for(DISPLAY_FONT, t.font)
+            size = base * 0.3 * t.size * k
+            s.style(name, font, size, ass_color(t.color), ass_color("#000000"), ass_color("#000000", 0x50),
                     1, size * 0.07, size * 0.05, align, int(margin))
             text_override = strip_markup(t.text).upper()
         else:  # lower_third: text on a solid band
-            size = base * 0.06 * t.size
-            s.style(name, BODY_FONT, size, ass_color(t.color), ass_color("#000000", 0x30), ass_color("#000000", 0x30),
+            font, k = font_for(BODY_FONT, t.font)
+            size = base * 0.06 * t.size * k
+            s.style(name, font, size, ass_color(t.color), ass_color("#000000", 0x30), ass_color("#000000", 0x30),
                     3, size * 0.35, 0, align, int(margin))
         text = text_override if t.style == "keyword" else strip_markup(t.text)
         x, y = _anchor(s, align, margin)

@@ -4,6 +4,8 @@ What changed between two timeline versions, in plain words for the version histo
 
 from typing import Optional
 
+from . import typefaces
+
 from .timeline import Timeline
 
 
@@ -114,6 +116,19 @@ def describe_changes(old: Optional[dict], new: dict, names: Optional[dict[str, s
         if new_fix != old_fix:
             out.append(f"Edited {_plural(len(new_fix - old_fix) or len(old_fix - new_fix), 'caption line')}")
 
+    if cb is not None:
+        if (ca.font if ca else None) != cb.font:
+            out.append(f"Caption font: {typefaces.FONTS[cb.font]['label'] if cb.font else 'the style default'}")
+        ea, eb = (ca.emphasis if ca else None), cb.emphasis
+        if ea != eb:
+            if eb is None:
+                out.append("Emphasised caption words removed")
+            else:
+                what = ", ".join(eb.words[:6]) + ("…" if len(eb.words) > 6 else "")
+                if eb.numbers:
+                    what = (what + ", " if what else "") + "numbers"
+                out.append(f"Emphasised words in {typefaces.FONTS[eb.font]['label']}: {what or 'none yet'}")
+
     # colour
     ga, gb = (a.grade.model_dump(exclude_none=True) if a.grade else None), \
         (b.grade.model_dump(exclude_none=True) if b.grade else None)
@@ -150,6 +165,18 @@ def describe_changes(old: Optional[dict], new: dict, names: Optional[dict[str, s
             out.append(f"Removed {_plural(len([i for i in sa if i not in sb]), 'sticker')}")
         if [i for i in sb if i in sa and sa[i] != sb[i]]:
             out.append(f"Changed {_plural(len([i for i in sb if i in sa and sa[i] != sb[i]]), 'sticker')}")
+    ea, eb = {x.id: x for x in a.effects}, {x.id: x for x in b.effects}
+    if ea != eb:
+        label = {"denoise": "video noise removal", "grain": "film grain", "blur": "blur"}
+        name = lambda e: label[e.type] + (" (part of the frame)" if e.region else "")  # noqa: E731
+        added = [name(eb[i]) for i in eb if i not in ea]
+        if added:
+            out.append("Added " + ", ".join(added))
+        removed = [name(ea[i]) for i in ea if i not in eb]
+        if removed:
+            out.append("Removed " + ", ".join(removed))
+        if [i for i in eb if i in ea and ea[i] != eb[i]]:
+            out.append(f"Changed {_plural(len([i for i in eb if i in ea and ea[i] != eb[i]]), 'effect')}")
     za, zb = len(a.zooms), len(b.zooms)
     if [z.model_dump() for z in a.zooms] != [z.model_dump() for z in b.zooms]:
         out.append(f"Emphasis zooms: {za} → {zb}" if za != zb else "Emphasis zooms changed")

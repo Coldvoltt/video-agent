@@ -4,6 +4,7 @@ import { shortDuration, timecode } from '../lib/format';
 import ClipInspector from './ClipInspector';
 import BrollInspector from './BrollInspector';
 import StickerInspector from './StickerInspector';
+import EffectInspector, { EFFECT_NAMES } from './EffectInspector';
 
 const CAPTION_NAMES = { karaoke: 'Karaoke', pop: 'Pop', boxed: 'Boxed', minimal: 'Minimal' };
 const TEXT_STYLE_NAMES = { title: 'Title', label: 'Label', lower_third: 'Lower third' };
@@ -116,8 +117,10 @@ export default function TimelineStrip({
   const names = Object.fromEntries((project.assets || []).map((a) => [a.id, a.filename || 'media']));
   const look = gradeName(data.grade, names);
   const hasLayers = data.captions || data.text?.length || data.overlays?.length || data.audio?.length
-    || data.broll?.length || data.zooms?.length || data.stickers?.length;
+    || data.broll?.length || data.zooms?.length || data.stickers?.length || data.effects?.length;
   const selectedSticker = (data.stickers || []).some((x) => x.id === selectedId);
+  const selectedEffect = (data.effects || []).some((x) => x.id === selectedId);
+  const at = total > 0 ? Math.min(1, Math.max(0, (playhead?.() || 0) / total)) : 0;
   const selectedBroll = (data.broll || []).some((b) => b.id === selectedId);
 
   const showVersion = async (v) => {
@@ -195,15 +198,19 @@ export default function TimelineStrip({
       )}
 
       <div className="lane lane-clips">
+        <span className="playhead" style={{ '--at': at }} aria-hidden="true" />
       <span className="lane-name">Clips</span>
       <ol className="strip">
         {placed.map((c) => {
           const words = row.clip_text?.[c.id];
+          // multicam clips: coloured and labelled by the camera they show
+          const angles = (project.assets || []).find((a) => a.id === c.asset_id)?.multicam?.angles;
+          const cam = angles?.length ? angles[Math.min(c.angle || 0, angles.length - 1)] : null;
           return (
             <li
               key={c.id}
               className={`clip ${c.overlap ? 'has-transition' : ''} ${c.id === selectedId && !isOld ? 'is-selected' : ''}`}
-              style={{ flexGrow: c.length - c.overlap / 2, '--clip': colors[c.asset_id] || '#888' }}
+              style={{ flexGrow: c.length - c.overlap / 2, '--clip': colors[cam ? cam.asset_id : c.asset_id] || '#888' }}
             >
               {c.overlap > 0 && (
                 <span className="transition-mark" title={`${c.transition_in.type}, ${c.overlap}s`} aria-hidden="true" />
@@ -225,6 +232,7 @@ Punch-in ${c.zoom}×` : ''}${
                 <span className="clip-length">
                   {shortDuration(c.length)}
                   {c.zoom > 1 && <span className="clip-zoom"> {c.zoom.toFixed(2)}×</span>}
+                  {cam && <span className="clip-zoom"> {cam.label}</span>}
                 </span>
               </button>
             </li>
@@ -248,7 +256,11 @@ Punch-in ${c.zoom}×` : ''}${
         <StickerInspector timeline={data} layerId={selectedId} onChange={onDraftChange} onSelect={onSelect} onSeek={onSeek} />
       )}
 
-      {selectedId && !isOld && !selectedBroll && !selectedSticker && (
+      {selectedId && !isOld && selectedEffect && (
+        <EffectInspector timeline={data} layerId={selectedId} total={total} onChange={onDraftChange} onSelect={onSelect} onSeek={onSeek} />
+      )}
+
+      {selectedId && !isOld && !selectedBroll && !selectedSticker && !selectedEffect && (
         <ClipInspector
           project={project}
           timeline={data}
@@ -261,6 +273,7 @@ Punch-in ${c.zoom}×` : ''}${
 
       {hasLayers && total > 0 && (
         <div className="lanes">
+          <span className="playhead" style={{ '--at': at }} aria-hidden="true" />
           {data.captions && (
             <Lane name="Captions" tone="captions" total={total} items={[{
               id: 'captions', start: 0, end: total,
@@ -289,6 +302,19 @@ Punch-in ${c.zoom}×` : ''}${
               items={data.broll.map((b) => ({
                 id: b.id, start: b.start, end: b.start + b.duration, label: names[b.asset_id],
                 title: `${names[b.asset_id]} ${timecode(b.start)}–${timecode(b.start + b.duration)}`,
+              }))} />
+          )}
+          {data.effects?.length > 0 && (
+            <Lane name="Effects" tone="effect" total={total} selectedId={!isOld ? selectedId : null}
+              onPick={isOld ? undefined : (id) => {
+                onSelect(id);
+                const fx = data.effects.find((x) => x.id === id);
+                if (fx) onSeek(Math.max(0, (fx.start || 0) - 0.3));
+              }}
+              items={data.effects.map((fx) => ({
+                id: fx.id, start: fx.start || 0, end: fx.end ?? total,
+                label: EFFECT_NAMES[fx.type] + (fx.region ? ' (area)' : ''),
+                title: `${EFFECT_NAMES[fx.type]} ${timecode(fx.start || 0)}–${fx.end == null ? 'end' : timecode(fx.end)}`,
               }))} />
           )}
           {data.stickers?.length > 0 && (

@@ -248,7 +248,7 @@ Order agreed: 1) B-roll, 2) emphasis pack (keyword pops, emphasis zooms, auto so
 - [x] Agent tools: `list_stickers`, `add_sticker`; `emphasize` can add an emoji
 - [x] UI: Stickers panel (animated callout thumbnails, popular emoji, any emoji, your animations), Stickers timeline row, sticker inspector (position, size, rotation, timing, colour, remove), stickers in the live preview via lottie-web (MIT, loaded only when needed)
 - [x] Live-run fixes: the agent silently skipped one of three requested stickers; the prompt now makes it do every part of a request or say what it didn't do. The live preview crashed when a sticker left the screen (lottie-web listener removed after destroy)
-- Licences: MODNet weights and code are Apache-2.0. rlottie is LGPL-2.1 and used unmodified through `rlottie-python`; keep it a separate, replaceable library
+- Licences: OpenCV (cut-out maths) is Apache-2.0. MODNet weights and code are Apache-2.0. rlottie is LGPL-2.1 and used unmodified through `rlottie-python`; keep it a separate, replaceable library
 
 **Step 3b: Background removal (done)**
 - [x] Person mattes with MODNet (Apache-2.0) on the CPU via ONNX Runtime. ONNX export from Hugging Face `Xenova/modnet` (Apache-2.0), pinned revision, SHA-256 checked, downloaded on first use to `<storage>/models/modnet.onnx` (or `EDITOR_MODNET_PATH`)
@@ -258,6 +258,63 @@ Order agreed: 1) B-roll, 2) emphasis pack (keyword pops, emphasis zooms, auto so
 - [x] Agent tool `set_background` (auto picks colour key or AI cut-out, warns that the first preview is slower); API `GET /assets/{id}/screen-color`; clip inspector controls; "what changed" lines
 - [x] Live-run fixes: half-sure matte areas ghosted the old background through (hay above the head); matte levels are now firmed up before compositing
 - [ ] Live preview doesn't show background changes (listed under "not shown live"); the rendered preview does
+
+**Feedback round, 2026-11-12 (user test notes)**
+1. Multicam (done): `editor/multicam.py`. 2-3 angles of one take (+ optional separate audio) are synced: coarse offset
+   from matching three-word runs in the transcripts, then onset-envelope cross-correlation (+-1.5 s of that, or
+   global without transcripts), then waveform cross-correlation for sample accuracy (test offsets exact to 3 ms;
+   the live 3-angle test matched the constructed 1.2/0.0/1.7 s exactly). All are trimmed to the shared stretch.
+   Audio: the separate recording, else the angle with the best speech-band SNR, minus clipping. Stored as a
+   `multicam` asset (its file = the chosen audio, its transcript = that audio's, moved to group time), so every
+   existing tool works on it. Clips have `angle`. Tools `create_multicam`, `switch_angles` (cuts at sentence
+   pauses every 2.5-6 s, at jump cuts once a shot has lasted 1 s, never the same angle twice, opens on a wide),
+   `set_angle`. API `POST /projects/{id}/multicam` (job). UI: "Sync camera angles", camera picker per clip,
+   clips labelled by camera; live preview plays the camera files (with their own sound).
+2. Cut-out quality (done): cut-outs are now a cached foreground + alpha pair (`v2-*` files). AI: model at 448 px
+   (same cost as 384), keyframes at 15 fps with interpolated mattes in between (no lag from smoothing), edge
+   colours decontaminated (blur-fusion foreground estimate). Green screen: own soft colour-difference keyer
+   (keeps hair strands as partial alpha) with brightness-preserving spill removal (the old ffmpeg chromakey +
+   despill cut strands off and left a dark outline). Tried a guided filter: it smeared dark hair on dark
+   backgrounds into a halo, so it is not used. Cost: AI ~9 s, key ~2 s per second of footage, once.
+3. B-roll from the transcript (done): `editor/brollplan.py`, tool `plan_broll`. The model reads the whole edit,
+   picks moments and writes 2-3 concrete Pixabay queries each; moments are located by their exact words, kept
+   out of the hook, off other B-roll and under a third of the runtime (shortened to fit); candidates' thumbnails
+   are scored by vision and only clear matches (>= 6/10) are placed. Live: elephant herd on "elephants", trunk
+   close-up on "really long trunks". The agent now calls it for any B-roll request instead of reusing images.
+5. Caption fonts (done, 2026-11-12): `editor/typefaces.py` registers 10 fonts bundled in `editor/fonts` (Google
+   Fonts, OFL/Apache, licences alongside). `captions.font`, `captions.emphasis` (words/phrases, numbers, font,
+   colour, size, uppercase) and `text[].font`. Sizes are scaled by each font's unitsPerEm/(winAscent+winDescent)
+   so any font draws as big as the default (libass sizes by line height); the browser preview needs no scaling.
+   Agent: `set_captions` font/emphasis options (it picks the important words itself), `add_text` and `emphasize`
+   fonts. API `GET /v2/fonts`; caption lines carry `emphasis` word positions for the live preview.
+6. Landing page (done, 2026-11-12): `frontend/src/Landing.jsx` at `/`, the editor at `/edit` (hosting needs an SPA
+   fallback to index.html). Charcoal and off-white with the timeline lane colours; Bricolage Grotesque headings;
+   the headline plays as a karaoke caption with emphasised words in caption fonts.
+7. Accounts and dashboard (done, 2026-11-13): `editor/auth.py`. Email + password (scrypt), sessions as random
+   tokens in an HttpOnly SameSite=Lax cookie (only a SHA-256 is stored), 30 days. Every endpoint takes the user from
+   the session, else an anonymous browser id, and an account's id is never accepted without its session. Signing
+   up or in moves that browser's anonymous projects (rows and files) into the account. `EDITOR_REQUIRE_ACCOUNT=1`
+   refuses anonymous use; `EDITOR_SECURE_COOKIES=1` for HTTPS. Simple brute-force guard (10 failures / 15 min).
+   API: `/v2/auth/{signup,login,logout,me}`, `GET/PATCH /v2/me` (name, password, settings), `GET /v2/dashboard`.
+   UI: sign-in dialog when you start editing (the start carries on after), user chip in the editor, `/dashboard`
+   with project cards and Settings (account, Telegram integration as "coming soon" with a notify-me switch).
+   Not yet: password reset by email, OAuth, email verification, deleting an account.
+8. Plans and vid-coins (done, 2026-11-13; demo payments): `editor/billing.py`. 1 coin = one full-quality export
+   per started minute (previews, chat and hand edits free), charged when the export is queued and refunded once if
+   it fails. Free 2 coins topped up each calendar month (no stacking); Basic $3 / NGN 4,500 = 10 coins for one
+   month; Pro $10 / NGN 15,000 = 25 coins for three months; buying adds coins and starts or extends the period;
+   paid coins end with the plan. Limits are enforced on the server where timelines are saved or exported and
+   where gated features start (multicam angles, B-roll count, caption styles/fonts/emphasis, AI background,
+   AI images), and the chat editor reports them ("Plan limit"). Ledger of every coin movement; payments table.
+   API: `GET /v2/plans`, `GET /v2/billing`, `POST /v2/billing/checkout`, `POST /v2/billing/demo/confirm`.
+   UI: pricing on the landing page (USD/NGN), Plan and coins tab with demo checkout, coin chip, export cost,
+   upgrade links on plan-limit errors, locked caption styles and fonts, multicam hint.
+   Next: a real provider (Paystack: initialize, redirect, verify by webhook signature) in place of the demo
+   confirm endpoint; receipts; reminders before a plan ends.
+4. Effects (done): `effects[]` layer: video noise removal (hqdn3d; nlmeans for strong settings in exports, +10 dB
+   on heavy noise), film grain (luma noise), blur of the whole frame or a region. Tool `add_effect`, Effects panel,
+   timeline row and inspector, live preview (backdrop blur, animated grain). Sound noise reduction stays in
+   audio polish.
 
 
 ## 7. Risks, legal and open questions

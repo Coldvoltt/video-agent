@@ -1,31 +1,40 @@
-/* Divverse editor
-   Neutral studio-grey surround (footage colours read true against it), one type family,
-   and per-source "tape label" colours that are the only saturated thing on screen. */
+/* VidAgent editor
+   Same family as the landing page: charcoal surfaces, off-white text, Bricolage Grotesque headings,
+   and the timeline layer colours (captions yellow, B-roll blue, stickers pink, effects mint, zooms
+   tangerine) as the only saturated things on screen, so a colour always means the same layer. */
 
 :root {
-  --surround: #2a2b2f;
-  --panel: #333439;
-  --panel-raised: #3c3d43;
-  --line: #44464c;
-  --line-strong: #5a5c63;
-  --text: #ecedef;
-  --text-muted: #a3a6ae;
-  --text-faint: #7d808a;
-  --amber: #e7b84a;
-  --amber-ink: #241c08;
-  --ok: #6cc59a;
-  --warn: #e7b84a;
-  --error: #f07167;
-  --stage: #1d1e21;
+  --surround: #262626;
+  --panel: #2e2e2e;
+  --panel-raised: #383838;
+  --line: #3b3b3b;
+  --line-strong: #565656;
+  --text: #eeede8;
+  --text-muted: #b9b8b2;
+  --text-faint: #8a8984;
+  --amber: #ffd23f;           /* the brand yellow (name kept: used throughout) */
+  --amber-ink: #1c1c1c;
+  --pink: #ff4fa3;
+  --blue: #4c6fff;
+  --mint: #3ddc97;
+  --tangerine: #ff7a2f;
+  --paper: #eeede8;
+  --ink: #1c1c1c;
+  --ok: #3ddc97;
+  --warn: #ffd23f;
+  --error: #ff6b6b;
+  --stage: #1d1d1d;
 
   --font: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --display: 'Bricolage Grotesque', 'Instrument Sans', system-ui, sans-serif;
   --step--1: 0.8125rem;
   --step-0: 0.9375rem;
   --step-1: 1.125rem;
   --step-3: clamp(2rem, 4vw, 3rem);
 
-  --radius-control: 6px;
-  --radius-frame: 4px;
+  --radius-control: 10px;
+  --radius-frame: 14px;
+  --radius-panel: 18px;
   --gap: 16px;
   color-scheme: dark;
 }
@@ -1693,4 +1702,127 @@ progress::-moz-progress-bar {
   progress::-webkit-progress-value {
     transition: none;
   }
+}
+
+.live-blur {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.live-grain {
+  position: absolute;
+  inset: -50%;
+  z-index: 1;
+  pointer-events: none;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation: grain-shift 0.4s steps(4) infinite;
+}
+
+@keyframes grain-shift {
+  0% { transform: translate(0, 0); }
+  25% { transform: translate(-7%, 4%); }
+  50% { transform: translate(5%, -6%); }
+  75% { transform: translate(-3%, 8%); }
+  100% { transform: translate(0, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live-grain {
+    animation: none;
+  }
+}
+
+.lane-effect {
+  background: rgba(120, 200, 190, 0.38);
+}
+
+.effect-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.effect-list li {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.effect-list li > div {
+  display: grid;
+  gap: 2px;
+}
+
+.effect-name {
+  font-weight: 600;
+}
+
+.region-grid {
+  margin-top: 12px;
+}
+
+@media (max-width: 560px) {
+  .effect-list li {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .effect-list li > div {
+    grid-column: 1 / -1;
+  }
+}
+
+.multicam-sync {
+  margin-top: 10px;
+}
+
+.multicam-form {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.multicam-form legend {
+  padding: 0 4px;
+}
+
+.multicam-audio {
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.multicam-busy {
+  display: block;
+  margin-top: 10px;
+}
+
+.emphasis-controls {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+}
+
+.emphasis-words {
+  grid-column: 1 / -1;
+}
+
+.emphasis-words input {
+  width: 100%;
+}
+
+.emphasis-sample {
+  grid-column: 1 / -1;
+  font-size: 18px;
+  color: var(--text, #f2f0ea);
+  margin: 4px 0 0;
 }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, errorMessage } from './lib/api';
+import { api, errorMessage, upgradeHint } from './lib/api';
 import { assetColorMap, isActive } from './lib/format';
 import TopBar from './components/TopBar';
 import MediaBin from './components/MediaBin';
@@ -10,6 +10,10 @@ import CaptionEditor from './components/CaptionEditor';
 import ColourPanel from './components/ColourPanel';
 import SoundPanel from './components/SoundPanel';
 import StickerPanel from './components/StickerPanel';
+import EffectPanel from './components/EffectPanel';
+import ToolTabs from './components/ToolTabs';
+import StartScreen from './components/StartScreen';
+import { AtAGlance, ExportsPanel, HistoryPanel, LayersPanel, ScriptPanel } from './components/ProjectInfo';
 
 const POLL_MS = 1500;
 
@@ -25,6 +29,10 @@ export default function App() {
   const [health, setHealth] = useState(null); // null = checking, false = unreachable
   const [projects, setProjects] = useState([]);
   const [projectId, setProjectId] = useState(storedProjectId);
+  const [starting, setStarting] = useState(() => new URLSearchParams(window.location.search).has('new'));
+  const [user, setUser] = useState(undefined); // undefined = checking, null = signed out
+  const [billing, setBilling] = useState(null); // plan and vid-coins
+  const [upgrade, setUpgrade] = useState(null); // plan that would unlock what the last error was about
   const [project, setProject] = useState(null);
   const [jobs, setJobs] = useState([]);
   const [messages, setMessages] = useState([]);
@@ -40,17 +48,54 @@ export default function App() {
 
   // ---- loading
 
-  useEffect(() => {
-    api.health().then(setHealth).catch(() => setHealth(false));
-    api.looks().then(setLooks).catch(() => {});
+  const loadProjects = useCallback(() => {
     api
       .listProjects()
       .then((list) => {
         setProjects(list);
         setProjectId((current) => (current && list.some((p) => p.id === current) ? current : list[0]?.id ?? null));
       })
-      .catch((e) => setError(errorMessage(e)));
+      .catch((e) => {
+        if (e?.response?.status === 401) {
+          // signed out and the server needs an account: start fresh; signing in comes before editing
+          setProjects([]);
+          setProjectId(null);
+        } else {
+          setError(errorMessage(e));
+        }
+      });
   }, []);
+
+  useEffect(() => {
+    api.health().then(setHealth).catch(() => setHealth(false));
+    api.looks().then(setLooks).catch(() => {});
+    // who's here first: when the server needs an account, a signed-out visitor has no projects to list
+    api
+      .me()
+      .then((r) => {
+        setUser(r.user);
+        if (r.user || !r.require_account) {
+          loadProjects();
+          loadBilling();
+        }
+      })
+      .catch(() => {
+        setUser(null);
+        loadProjects();
+      });
+  }, [loadProjects]);
+
+  const signedIn = (u) => {
+    setUser(u);
+    loadBilling();
+    // Work started before signing in now belongs to the account: refresh the list, but don't switch
+    // projects here (the start screen opens the new project itself once its upload is done).
+    api.listProjects().then(setProjects).catch(() => {});
+  };
+  const signOut = async () => {
+    await api.signOut().catch(() => {});
+    window.location.href = '/';
+  };
 
   useEffect(() => {
     try {
@@ -122,19 +167,25 @@ export default function App() {
     }
   };
 
-  /** Run an API call, surface errors, then refresh project state. */
+  const loadBilling = useCallback(() => {
+    api.billing().then(setBilling).catch(() => setBilling(null));
+  }, []);
+
+  /** Run an API call, surface errors (with an upgrade link when a plan limit stopped it), then refresh. */
   const act = useCallback(
     async (fn) => {
       try {
         const out = await fn();
         await refresh();
+        loadBilling();
         return out;
       } catch (e) {
         setError(errorMessage(e));
+        setUpgrade(upgradeHint(e));
         return null;
       }
     },
-    [refresh],
+    [refresh, loadBilling],
   );
 
   const colors = useMemo(() => assetColorMap(project?.assets), [project?.assets]);
@@ -196,8 +247,13 @@ export default function App() {
         projects={projects}
         project={project}
         projectId={projectId}
+        jobs={jobs}
+        user={user}
+        billing={billing}
+        onSignOut={signOut}
         onSelect={setProjectId}
         onCreate={createProject}
+        onNew={() => setStarting(true)}
         onDelete={deleteProject}
       />
 
@@ -216,21 +272,30 @@ export default function App() {
       {error && (
         <p className="notice notice-error" role="alert">
           {error}
-          <button className="link-button" onClick={() => setError(null)}>
+          {upgrade && (
+            <a className="button-primary notice-upgrade" href={`/dashboard?upgrade=${upgrade}#plan`}>
+              Upgrade to {upgrade === 'pro' ? 'Pro' : 'Basic'}
+            </a>
+          )}
+          <button className="link-button" onClick={() => { setError(null); setUpgrade(null); }}>
             Dismiss
           </button>
         </p>
       )}
 
-      {!projectId ? (
-        <main className="welcome">
-          <h1>Edit by describing it.</h1>
-          <p>
-            Add your footage or a YouTube link, then tell the editor what you want: a 30-second vertical short, the best
-            three moments, no more dead air.
-          </p>
-          <NewProjectForm onCreate={createProject} />
-        </main>
+      {!projectId || starting ? (
+        <StartScreen
+          projects={projects}
+          act={act}
+          user={user}
+          onSignedIn={signedIn}
+          onOpen={(p) => {
+            setProjects((list) => (list.some((x) => x.id === p.id) ? list : [p, ...list]));
+            setStarting(false);
+            setProjectId(p.id);
+          }}
+          onCancel={projectId ? () => setStarting(false) : null}
+        />
       ) : (
         <main className="workspace">
           <MediaBin
@@ -243,6 +308,7 @@ export default function App() {
             stockProviders={health?.stock_providers || []}
             aiImages={!!health?.openai_key}
             onAsk={(message) => act(() => api.chat(project.id, message))}
+            billing={billing}
           />
           <section className="center" aria-label="Preview and timeline">
             <Stage
@@ -254,7 +320,9 @@ export default function App() {
               draft={draft}
               looks={looks}
               onTime={setPlayhead}
+              billing={billing}
             />
+            <AtAGlance project={project} draft={draft} />
             <TimelineStrip
               project={project}
               colors={colors}
@@ -271,18 +339,39 @@ export default function App() {
               onUndo={undo}
               onRedo={redo}
             />
-            {draft ? (
-              <p className="notice notice-inline caption-paused">
-                Save or discard your timeline edits to change colour or captions.
-              </p>
-            ) : (
-              <>
-                <ColourPanel project={project} looks={looks} act={act} />
-                <SoundPanel project={project} act={act} playhead={() => playhead} />
-                <StickerPanel project={project} act={act} playhead={() => playhead} />
-                <CaptionEditor project={project} act={act} onSeek={seek} />
-              </>
-            )}
+            <ToolTabs
+              tabs={((data) => {
+                // tools that change the timeline wait while there are unsaved hand edits
+                const tool = (node) => (draft ? (
+                  <p className="notice notice-inline caption-paused">
+                    Save or discard your timeline edits first; then this tool works on the saved edit.
+                  </p>
+                ) : node);
+                return [
+                  { id: 'script', label: 'Script', tone: 'paper',
+                    node: <ScriptPanel project={project} draft={draft} playhead={() => playhead} onSeek={seek} /> },
+                  { id: 'captions', label: 'Captions', tone: 'yellow', count: data?.captions ? 'On' : null,
+                    node: tool(<CaptionEditor project={project} act={act} onSeek={seek} billing={billing} />) },
+                  { id: 'colour', label: 'Colour', tone: 'tangerine', count: data?.grade ? 'On' : null,
+                    node: tool(<ColourPanel project={project} looks={looks} act={act} />) },
+                  { id: 'sound', label: 'Sound', tone: 'blue', count: data?.audio?.length || null,
+                    node: tool(<SoundPanel project={project} act={act} playhead={() => playhead} />) },
+                  { id: 'stickers', label: 'Stickers', tone: 'pink', count: data?.stickers?.length || null,
+                    node: tool(<StickerPanel project={project} act={act} playhead={() => playhead} />) },
+                  { id: 'effects', label: 'Effects', tone: 'mint', count: data?.effects?.length || null,
+                    node: tool(<EffectPanel project={project} act={act} playhead={() => playhead} />) },
+                  { id: 'layers', label: 'Layers', tone: 'paper',
+                    count: ['text', 'overlays', 'audio', 'broll', 'zooms', 'stickers', 'effects']
+                      .reduce((n, k) => n + ((draft || data)?.[k]?.length || 0), 0) || null,
+                    node: <LayersPanel project={project} draft={draft} onSeek={seek} onSelect={setSelectedClip} /> },
+                  { id: 'history', label: 'History', tone: 'paper', count: project?.timeline_versions?.length || null,
+                    node: <HistoryPanel project={project} act={act} /> },
+                  { id: 'exports', label: 'Exports', tone: 'paper',
+                    count: jobs.filter((j) => j.kind === 'render' && j.status === 'succeeded').length || null,
+                    node: <ExportsPanel project={project} jobs={jobs} act={act} /> },
+                ];
+              })(project?.timeline?.data)}
+            />
           </section>
           <ChatPanel
             project={project}
@@ -299,29 +388,3 @@ export default function App() {
   );
 }
 
-function NewProjectForm({ onCreate }) {
-  const [name, setName] = useState('');
-  return (
-    <form
-      className="inline-form"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (name.trim()) onCreate(name.trim());
-      }}
-    >
-      <label className="visually-hidden" htmlFor="first-project">
-        Project name
-      </label>
-      <input
-        id="first-project"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Project name, e.g. Studio tour vlog"
-        maxLength={200}
-      />
-      <button className="button-primary" disabled={!name.trim()}>
-        Create project
-      </button>
-    </form>
-  );
-}

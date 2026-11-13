@@ -92,7 +92,7 @@ def test_caption_lines_map_back_to_source():
     lines = captions.caption_lines(_tl(), TR)
     assert [ln["text"] for ln in lines] == ["the zoo is", "grate", "bye"]
     assert lines[1] == {"start": 1.5, "end": 3.35, "text": "grate", "asset_id": "x", "src_start": 1.5,
-                        "src_end": 3.0, "edited": False}
+                        "src_end": 3.0, "edited": False, "emphasis": []}
 
 
 def test_corrections_replace_hide_and_stay_together():

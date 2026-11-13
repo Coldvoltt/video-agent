@@ -27,6 +27,7 @@ from typing import Callable, Optional
 from . import captions as captions_mod
 from . import colormatch
 from . import luts as luts_mod
+from . import multicam as multicam_mod
 from . import sfx as sfx_mod
 from . import stickers as stickers_mod
 from .config import require_ffmpeg
@@ -145,55 +146,38 @@ def _hex(c: str) -> str:
     return "0x" + c.lstrip("#").upper()
 
 
-def _background(g: "_Graph", clip, asset: dict, i: int, w: int, h: int, fps: float, fit: str,
+def _background(g: "_Graph", clip, asset: dict, video_in: float, i: int, w: int, h: int, fps: float, fit: str,
                 assets: dict[str, dict], asset_paths: dict[str, Path],
-                mattes: dict[str, tuple[Path, float]]) -> str:
-    """Composite the subject of one clip over a new background; returns a label at w x h."""
+                mattes: dict[str, tuple[Path, Path, float]]) -> str:
+    """Composite the subject of one clip over a new background; returns a label at w x h.
+
+    The subject comes from the cached cut-out (`matte.ensure`): a foreground video with clean edge
+    colours and an alpha video, both starting at `seg_start` in source time."""
     bg = clip.background
     dur = _f(clip.duration)
     sw, sh = _even(asset.get("width") or w), _even(asset.get("height") or h)
     cover = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
     mask_fit = re.sub(r":color=[^,]*$", ":color=black", fit)  # letterbox bars count as background
-    need_bgsrc = bg.replace_with == "blur"
-    chroma = bg.method == "chroma"
-    outs = 1 + int(need_bgsrc) + int(chroma)
-    src = g.label("bsrc")
-    names = [g.label("bs") for _ in range(outs)]
-    g.add(f"[{i}:v:0]setpts=PTS-STARTPTS,fps={_f(fps)},scale={sw}:{sh},setsar=1,split={outs}"
-          + "".join(f"[{n}]" for n in names))
-    fg_raw, rest = names[0], names[1:]
-
-    # mask (white = subject) at the source size
-    mask = g.label("mk")
-    if chroma:
-        key_src = rest.pop()
-        r, gg, b = (int(bg.key_color[k:k + 2], 16) for k in (1, 3, 5))
-        g.add(f"[{key_src}]format=yuva444p,chromakey={_hex(bg.key_color)}:{_f(bg.key_tolerance)}:0.08,"
-              f"alphaextract[{mask}]")
-        spill = "blue" if b > gg else "green"
-        fg2 = g.label("fg")
-        g.add(f"[{fg_raw}]format=gbrap,despill=type={spill},format=yuv420p[{fg2}]")
-        fg_raw = fg2
-    else:
-        if clip.id not in mattes:
-            raise RenderError(f"clip {clip.id}: background matte is missing")
-        mpath, seg_start = mattes[clip.id]
-        mi = g.input("-ss", _f(max(0.0, clip.in_ - seg_start)), "-t", dur, "-i", str(mpath))
-        g.add(f"[{mi}:v:0]setpts=PTS-STARTPTS,format=gray,scale={sw}:{sh}:flags=bicubic,fps={_f(fps)},"
-              f"tpad=stop_mode=clone:stop_duration={dur}[{mask}]")
-
+    if clip.id not in mattes:
+        raise RenderError(f"clip {clip.id}: background matte is missing")
+    fg_path, alpha_path, seg_start = mattes[clip.id]
+    offset = _f(max(0.0, video_in - seg_start))
+    fi = g.input("-ss", offset, "-t", dur, "-i", str(fg_path))
+    ai = g.input("-ss", offset, "-t", dur, "-i", str(alpha_path))
+    hold = f"tpad=stop_mode=clone:stop_duration={dur}"   # a cut-out a frame short never shows a gap
     fg, mk = g.label("fgf"), g.label("mkf")
-    g.add(f"[{fg_raw}]{fit},setsar=1,format=yuv420p[{fg}]")
-    # Firm up the matte: faint values (unsure areas, which ghost through) go to 0, near-solid ones to 1.
-    levels = "" if chroma else ",lut=c0='clip((val-40)*255/170,0,255)'"
-    g.add(f"[{mask}]format=gray{levels},{mask_fit},setsar=1,gblur=sigma=1[{mk}]")
+    g.add(f"[{fi}:v:0]setpts=PTS-STARTPTS,scale={sw}:{sh}:flags=bicubic,fps={_f(fps)},{hold},setsar=1,"
+          f"{fit},setsar=1,format=yuv444p[{fg}]")
+    g.add(f"[{ai}:v:0]setpts=PTS-STARTPTS,format=gray,scale={sw}:{sh}:flags=bicubic,fps={_f(fps)},{hold},"
+          f"setsar=1,{mask_fit},setsar=1[{mk}]")
     fga = g.label("fga")
     g.add(f"[{fg}][{mk}]alphamerge[{fga}]")
 
     back = g.label("bg")
     if bg.replace_with == "blur":
         sigma = max(4.0, bg.blur * w * 0.035)
-        g.add(f"[{rest.pop()}]{cover},gblur=sigma={_f(sigma)},setsar=1,format=yuv420p[{back}]")
+        g.add(f"[{i}:v:0]setpts=PTS-STARTPTS,fps={_f(fps)},{cover},gblur=sigma={_f(sigma)},setsar=1,"
+              f"format=yuv420p[{back}]")
     elif bg.replace_with == "color":
         g.add(f"color=c={_hex(bg.color)}:s={w}x{h}:r={_f(fps)}:d={dur},format=yuv420p[{back}]")
     else:
@@ -211,7 +195,7 @@ def _background(g: "_Graph", clip, asset: dict, i: int, w: int, h: int, fps: flo
 
 def build_plan(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[str, Path],
                out_path: Path, preview: bool, transcripts: Optional[dict[str, dict | None]] = None,
-               mattes: Optional[dict[str, tuple[Path, float]]] = None) -> RenderPlan:
+               mattes: Optional[dict[str, tuple[Path, Path, float]]] = None) -> RenderPlan:
     ffmpeg = require_ffmpeg()
     w, h, fps = output_size(timeline, preview)
     total = timeline.duration
@@ -233,24 +217,33 @@ def build_plan(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[st
         asset = assets[clip.asset_id]
         src = str(asset_paths[clip.asset_id])
         dur = _f(clip.duration)
+        picture, video_in = asset, clip.in_
         if asset["kind"] == "image":
             i = g.input("-loop", "1", "-framerate", _f(fps), "-t", dur, "-i", src)
+            ia = i
+        elif asset["kind"] == "multicam":
+            # picture from the chosen angle (its own time = group time + offset), sound from the group audio
+            angle_id, offset = multicam_mod.angle_source(asset, clip.angle)
+            picture, video_in = assets[angle_id], clip.in_ + offset
+            i = g.input("-ss", _f(video_in), "-t", dur, "-i", str(asset_paths[angle_id]))
+            ia = g.input("-ss", _f(clip.in_), "-t", dur, "-i", src)
         else:
             i = g.input("-ss", _f(clip.in_), "-t", dur, "-i", src)
+            ia = i
         v, a = g.label("v"), g.label("a")
         punch = ""
         if clip.zoom and clip.zoom > 1.0:
             # Centre crop then scale back up: a closer framing of the same shot (punch-in).
             punch = f",crop=iw/{_f(clip.zoom)}:ih/{_f(clip.zoom)},scale={w}:{h}"
-        if clip.background and asset["kind"] == "video":
-            comp = _background(g, clip, asset, i, w, h, fps, fit, assets, asset_paths, mattes or {})
+        if clip.background and asset["kind"] in ("video", "multicam"):
+            comp = _background(g, clip, picture, video_in, i, w, h, fps, fit, assets, asset_paths, mattes or {})
             g.add(f"[{comp}]null{punch},fps={_f(fps)},format=yuv420p,setsar=1,"
                   f"trim=duration={dur},setpts=PTS-STARTPTS,settb=AVTB[{v}]")
         else:
             g.add(f"[{i}:v:0]setpts=PTS-STARTPTS,{fit}{punch},fps={_f(fps)},format=yuv420p,setsar=1,"
                   f"trim=duration={dur},setpts=PTS-STARTPTS,settb=AVTB[{v}]")
-        if asset["kind"] == "video" and asset.get("has_audio"):
-            g.add(f"[{i}:a:0]asetpts=PTS-STARTPTS,{afmt},volume={_f(clip.volume)},"
+        if asset["kind"] in ("video", "multicam") and asset.get("has_audio"):
+            g.add(f"[{ia}:a:0]asetpts=PTS-STARTPTS,{afmt},volume={_f(clip.volume)},"
                   f"apad,atrim=duration={dur},asetpts=PTS-STARTPTS[{a}]")
         else:
             g.add(f"anullsrc=channel_layout=stereo:sample_rate={SAMPLE_RATE},atrim=duration={dur},"
@@ -271,6 +264,30 @@ def build_plan(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[st
             g.add(f"[{cur_v}][{cur_a}][{v}][{a}]concat=n=2:v=1:a=1[{nv}][{na}]")
             cur_len += length
         cur_v, cur_a = nv, na
+
+    def window(e) -> tuple[float, float] | None:
+        end = total if e.end is None else min(e.end, total)
+        return (e.start, end) if e.start < end else None
+
+    def enable(e) -> str:
+        a, b = window(e)
+        return f":enable='between(t,{_f(a)},{_f(b)})'"
+
+    effects = [e for e in timeline.effects if window(e)]
+
+    # 2b. video noise removal on the main footage (before the grade, which would sharpen the noise)
+    for e in (e for e in effects if e.type == "denoise"):
+        k = e.strength
+        nv = g.label("dn")
+        if k > 0.6 and not preview:
+            # Heavy noise: non-local means is far better (+10 dB vs +3 dB on very noisy footage) but ~5x slower,
+            # so exports use it and previews keep the fast filter.
+            g.add(f"[{cur_v}]nlmeans=s={_f(2 + 4 * k)}:p=5:r=11{enable(e)}[{nv}]")
+        else:
+            k = min(k, 0.6) / 0.6     # hqdn3d tops out at the settings that measured best on ordinary noise
+            g.add(f"[{cur_v}]hqdn3d={_f(2 + 6 * k)}:{_f(1.5 + 4.5 * k)}:{_f(3 + 9 * k)}:{_f(2.5 + 7 * k)}"
+                  f"{enable(e)}[{nv}]")
+        cur_v = nv
 
     # 3. grade
     if timeline.grade:
@@ -392,6 +409,28 @@ def build_plan(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[st
               f"enable='between(t,{_f(st.start)},{_f(st.start + dur)})'[{nv}]")
         cur_v = nv
 
+    # 4c. blur and film grain over the picture (B-roll and graphics included), under captions and text
+    for e in (e for e in effects if e.type == "blur"):
+        # blur level -> radius, eased so Light stays gentle and Maximum makes a face unrecognisable
+        # (sigma at a 1920-px long side: light 0.2 ~9, medium 0.5 ~26, strong 0.8 ~46, maximum ~60)
+        sigma = (2 + 58 * e.strength ** 1.3) * (w / 1920 if w >= h else h / 1920)
+        nv = g.label("bl")
+        if e.region is None:
+            g.add(f"[{cur_v}]gblur=sigma={_f(sigma)}:steps=2{enable(e)}[{nv}]")
+        else:
+            r = e.region
+            rx, ry = int(round(r.x * w / 2)) * 2, int(round(r.y * h / 2)) * 2
+            rw, rh = max(2, min(_even(r.w * w), w - rx)), max(2, min(_even(r.h * h), h - ry))
+            base, cut, soft = g.label("blb"), g.label("blc"), g.label("bls")
+            g.add(f"[{cur_v}]split[{base}][{cut}]")
+            g.add(f"[{cut}]crop={rw}:{rh}:{rx}:{ry},gblur=sigma={_f(max(sigma, 12))}:steps=3[{soft}]")
+            g.add(f"[{base}][{soft}]overlay=x={rx}:y={ry}{enable(e)}[{nv}]")
+        cur_v = nv
+    for e in (e for e in effects if e.type == "grain"):
+        nv = g.label("gr")
+        g.add(f"[{cur_v}]noise=c0s={_f(6 + 22 * e.strength)}:c0f=t+u{enable(e)}[{nv}]")
+        cur_v = nv
+
     # 5. captions + text
     ass = captions_mod.build_ass(timeline, transcripts or {})
     if ass:
@@ -498,7 +537,7 @@ def build_plan(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[st
 def render(timeline: Timeline, assets: dict[str, dict], asset_paths: dict[str, Path], out_path: Path,
            preview: bool = False, on_progress: Optional[Callable[[float], None]] = None,
            transcripts: Optional[dict[str, dict | None]] = None,
-           mattes: Optional[dict[str, tuple[Path, float]]] = None) -> dict:
+           mattes: Optional[dict[str, tuple[Path, Path, float]]] = None) -> dict:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     asset_paths = {k: Path(v).resolve() for k, v in asset_paths.items()}

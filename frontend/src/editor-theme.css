@@ -1,0 +1,568 @@
+/* ================================================================ editor theme (landing-page family)
+   Loaded after index.css so it overrides the earlier, plainer rules in one place. */
+
+.tone-yellow { --tone: var(--amber); --tone-ink: var(--ink); }
+.tone-pink { --tone: var(--pink); --tone-ink: var(--ink); }
+.tone-blue { --tone: var(--blue); --tone-ink: #ffffff; }
+.tone-mint { --tone: var(--mint); --tone-ink: var(--ink); }
+.tone-tangerine { --tone: var(--tangerine); --tone-ink: var(--ink); }
+
+h1, h2, h3,
+.panel-title,
+.welcome h1 {
+  font-family: var(--display);
+  letter-spacing: -0.015em;
+}
+
+.panel-title {
+  font-size: 1.12rem;
+  font-weight: 700;
+}
+
+input,
+select,
+textarea {
+  background: #1f1f1f;
+  border-color: var(--line);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--amber);
+  outline: none;
+}
+
+/* buttons: pills, the primary one with the landing page's pink offset on hover */
+.button-primary,
+.button-secondary,
+.button-quiet {
+  border-radius: 999px;
+  padding: 8px 16px;
+}
+
+.button-primary {
+  font-family: var(--display);
+  font-weight: 700;
+  background: var(--amber);
+  color: var(--ink);
+  box-shadow: 0 0 0 0 var(--pink);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.button-primary:hover:not(:disabled) {
+  background: var(--amber);
+  transform: translate(-2px, -2px);
+  box-shadow: 2px 2px 0 0 var(--pink);
+}
+
+.button-primary:disabled,
+.button-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.button-secondary {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.button-secondary:hover:not(:disabled) {
+  border-color: var(--paper);
+}
+
+/* ---------------------------------------------------------------- top bar */
+
+.topbar {
+  padding: 12px 18px;
+  gap: 18px;
+  border-bottom: 0;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.3rem;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.brand-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--amber);
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.status-chips {
+  list-style: none;
+  margin: 0 0 0 auto;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--panel);
+  color: var(--text-muted);
+  border: 1px solid var(--line);
+}
+
+.chip-yellow { background: var(--amber); color: var(--ink); border-color: transparent; }
+.chip-blue { background: var(--blue); color: #ffffff; border-color: transparent; }
+.chip-mint { background: var(--mint); color: var(--ink); border-color: transparent; }
+
+.chip-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+/* ---------------------------------------------------------------- workspace */
+
+.workspace {
+  gap: 14px;
+  padding: 0 14px 14px;
+  background: var(--surround);
+}
+
+.workspace > * {
+  background: transparent;
+}
+
+.panel {
+  background: var(--panel);
+  border-radius: var(--radius-panel);
+  padding: 18px;
+}
+
+.center {
+  gap: 14px;
+}
+
+.stage {
+  border-radius: var(--radius-panel);
+  padding: 16px 18px 0;
+}
+
+.timeline {
+  background: var(--panel);
+  border: 0;
+  border-radius: var(--radius-panel);
+  padding: 16px 18px 18px;
+}
+
+.notice {
+  margin: 0 14px 12px;
+  border-radius: var(--radius-control);
+  border-left-width: 4px;
+}
+
+/* media: thumbnails with the source's colour as a tape strip */
+.asset {
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+}
+
+/* an upload in progress still uses the thin swatch */
+.asset .swatch {
+  width: 64px;
+  height: 42px;
+  border-radius: 9px;
+}
+
+.thumb {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 42px;
+  border-radius: 9px;
+  overflow: hidden;
+  background: #1f1f1f;
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+
+.thumb video,
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.thumb::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--tape, var(--line-strong));
+}
+
+.thumb-icon {
+  width: 34px;
+  fill: var(--text-muted);
+}
+
+.thumb-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.asset-name {
+  font-weight: 600;
+}
+
+.dropzone {
+  border-radius: 14px;
+}
+
+/* ---------------------------------------------------------------- stage and timeline */
+
+.frame {
+  border-radius: var(--radius-frame);
+}
+
+.stage-tabs {
+  border-radius: 999px;
+  padding: 3px;
+}
+
+.stage-tabs button {
+  border-radius: 999px;
+}
+
+.lane-track {
+  border-radius: 6px;
+  background: #262626;
+}
+
+.lane-bar {
+  border-radius: 5px;
+  font-weight: 600;
+}
+
+.lane-captions { background: var(--amber); color: var(--ink); }
+.lane-broll { background: var(--blue); color: #ffffff; }
+.lane-sticker { background: var(--pink); color: var(--ink); }
+.lane-effect { background: var(--mint); color: var(--ink); }
+.lane-zoom { background: var(--tangerine); color: var(--ink); }
+.lane-text { background: var(--paper); color: var(--ink); }
+.lane-overlay { background: #b39dff; color: var(--ink); }
+.lane-audio { background: #66c7ff; color: var(--ink); }
+
+.lane-bar.is-selected {
+  outline: 2px solid var(--paper);
+  outline-offset: 1px;
+}
+
+.clip-button {
+  border-radius: 8px;
+}
+
+/* the playhead runs through the clips and every layer */
+.lanes,
+.lane-clips {
+  position: relative;
+}
+
+.playhead {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: calc(var(--lane-gutter) + 8px + (100% - var(--lane-gutter) - 8px) * var(--at, 0));
+  width: 2px;
+  margin-left: -1px;
+  background: var(--paper);
+  border-radius: 2px;
+  z-index: 3;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+
+.lane-name {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* ---------------------------------------------------------------- tools (tabs) */
+
+.tools {
+  background: var(--panel);
+  border-radius: var(--radius-panel);
+  padding: 14px 18px 18px;
+}
+
+.tool-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.tool-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--display);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.tool-tab:hover {
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.tool-tab[aria-selected='true'] {
+  background: var(--paper);
+  border-color: var(--paper);
+  color: var(--ink);
+}
+
+.tool-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+
+.tool-count {
+  font-family: var(--font);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--tone);
+  color: var(--tone-ink);
+}
+
+/* panels inside a tab don't need their own frame */
+.tool-body > section,
+.tool-body .colour-panel,
+.tool-body .captions-editor {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  background: none;
+}
+
+/* ---------------------------------------------------------------- chat */
+
+.chat {
+  top: 0;
+  height: calc(100vh - 14px);
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.chat-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--amber);
+  color: var(--ink);
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.1rem;
+  flex: 0 0 auto;
+}
+
+.chat-who {
+  display: grid;
+  line-height: 1.25;
+}
+
+.chat-who span {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.message {
+  padding: 10px 14px;
+  border-radius: 18px;
+  max-width: 90%;
+}
+
+.message-user {
+  background: var(--paper);
+  color: var(--ink);
+  border-radius: 18px 18px 5px 18px;
+}
+
+.message-assistant {
+  background: var(--panel-raised);
+  border-left: 0;
+  border-radius: 18px 18px 18px 5px;
+  padding: 10px 14px;
+}
+
+.message-error {
+  background: rgba(255, 107, 107, 0.16);
+}
+
+.message-tag {
+  color: var(--amber);
+}
+
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.suggestion {
+  width: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 7px 13px;
+  border-color: var(--line-strong);
+  font-size: 0.88rem;
+  line-height: 1.3;
+}
+
+.suggestion::before {
+  content: '';
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone, var(--amber));
+}
+
+.suggestion:hover:not(:disabled) {
+  background: var(--tone, var(--amber));
+  border-color: var(--tone, var(--amber));
+  color: var(--tone-ink, var(--ink));
+}
+
+.suggestion:hover:not(:disabled)::before {
+  background: currentColor;
+}
+
+.composer {
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 6px;
+  padding: 6px 6px 6px 14px;
+  border-radius: 22px;
+  background: #1f1f1f;
+  border: 1px solid var(--line);
+}
+
+.composer:focus-within {
+  border-color: var(--amber);
+}
+
+.composer textarea {
+  border: 0;
+  background: transparent;
+  padding: 6px 0;
+  min-height: 48px;
+  resize: none;
+}
+
+.composer textarea:focus {
+  outline: none;
+}
+
+.send-button {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--amber);
+  color: var(--ink);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.send-button svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.send-button:disabled {
+  background: var(--panel-raised);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+/* ---------------------------------------------------------------- welcome */
+
+.welcome {
+  max-width: 760px;
+  padding: 12vh clamp(20px, 6vw, 80px) 40px;
+}
+
+.welcome h1 {
+  font-size: clamp(2.6rem, 6vw, 4.6rem);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.035em;
+}
+
+@media (max-width: 760px) {
+  .status-chips {
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chip-dot {
+    animation: none;
+  }
+
+  .button-primary {
+    transition: none;
+  }
+
+  .button-primary:hover:not(:disabled) {
+    transform: none;
+  }
+}

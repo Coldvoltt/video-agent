@@ -2,7 +2,8 @@ import axios from 'axios';
 
 export const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-const http = axios.create({ baseURL: API_BASE });
+// withCredentials: the sign-in session is an HttpOnly cookie, sent with every request.
+const http = axios.create({ baseURL: API_BASE, withCredentials: true });
 
 function getUserId() {
   let id = null;
@@ -28,6 +29,7 @@ const withUser = (params = {}) => ({ params: { user_id: userId, ...params } });
 /** Human-readable message from an API error. */
 export function errorMessage(err) {
   const detail = err?.response?.data?.detail;
+  if (detail && typeof detail === 'object' && !Array.isArray(detail) && detail.message) return detail.message;
   if (Array.isArray(detail)) return detail.map((d) => (typeof d === 'string' ? d : d.msg)).join('; ');
   if (typeof detail === 'string') return detail;
   if (err?.code === 'ERR_NETWORK') return 'Can’t reach the server. Check that the backend is running.';
@@ -35,6 +37,22 @@ export function errorMessage(err) {
 }
 
 export const api = {
+  // accounts (claim_user_id moves work done before signing in on this browser into the account)
+  me: () => http.get('/v2/auth/me').then((r) => r.data),
+  signUp: (email, password, name) =>
+    http.post('/v2/auth/signup', { email, password, name, claim_user_id: userId }).then((r) => r.data),
+  signIn: (email, password) => http.post('/v2/auth/login', { email, password, claim_user_id: userId }).then((r) => r.data),
+  signOut: () => http.post('/v2/auth/logout').then((r) => r.data),
+  account: () => http.get('/v2/me').then((r) => r.data),
+  updateAccount: (body) => http.patch('/v2/me', body).then((r) => r.data),
+  dashboard: () => http.get('/v2/dashboard', withUser()).then((r) => r.data.projects),
+  // plans and vid-coins
+  plans: () => http.get('/v2/plans').then((r) => r.data),
+  billing: () => http.get('/v2/billing', withUser()).then((r) => r.data),
+  checkout: (plan, currency) => http.post('/v2/billing/checkout', { plan, currency }).then((r) => r.data),
+  confirmDemo: (reference, success = true) =>
+    http.post('/v2/billing/demo/confirm', { reference, success }).then((r) => r.data),
+
   health: () => http.get('/health').then((r) => r.data),
 
   listProjects: () => http.get('/v2/projects', withUser()).then((r) => r.data.projects),
@@ -77,6 +95,8 @@ export const api = {
   generateBroll: (pid, prompt) =>
     http.post(`/v2/projects/${pid}/broll/generate`, { prompt }, withUser()).then((r) => r.data),
   stickers: () => http.get('/v2/stickers').then((r) => r.data),
+  createMulticam: (pid, assetIds, audioAssetId) =>
+    http.post(`/v2/projects/${pid}/multicam`, { asset_ids: assetIds, audio_asset_id: audioAssetId }, withUser()).then((r) => r.data),
   screenColor: (projectId, assetId, t) =>
     http.get(`/v2/projects/${projectId}/assets/${assetId}/screen-color`, withUser({ t })).then((r) => r.data.color),
   sounds: () => http.get('/v2/sfx').then((r) => r.data.sounds),
@@ -105,3 +125,6 @@ export const assetFileUrl = (pid, asset) =>
 
 export const stickerUrl = (sticker, color) =>
   `${API_BASE}/v2/stickers/lottie?sticker=${encodeURIComponent(sticker)}${color ? `&color=${encodeURIComponent(color)}` : ''}`;
+
+/** Which plan would unlock what an error was about (402 from a plan limit), or null. */
+export const upgradeHint = (err) => (err?.response?.status === 402 ? err.response.data?.detail?.upgrade || 'basic' : null);

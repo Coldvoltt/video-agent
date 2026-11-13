@@ -37,9 +37,15 @@ function BackgroundControls({ project, timeline, clip, asset, change }) {
   const [detecting, setDetecting] = useState(false);
   const [note, setNote] = useState('');
   const bg = clip.background;
-  if (asset?.kind !== 'video') return null;
+  if (asset?.kind !== 'video' && asset?.kind !== 'multicam') return null;
+  // multicam: the picture (and so the screen colour) comes from the chosen camera's own file
+  const angles = asset.multicam?.angles;
+  const pictureAngle = angles?.length ? angles[Math.min(clip.angle || 0, angles.length - 1)] : null;
+  const pictureId = pictureAngle ? pictureAngle.asset_id : clip.asset_id;
+  const pictureAt = clip.in + (pictureAngle ? pictureAngle.offset : 0) + 0.5;
   const media = project.assets.filter(
-    (a) => a.status === 'ready' && (a.kind === 'image' || a.kind === 'video') && a.role !== 'reference' && a.id !== clip.asset_id,
+    (a) => a.status === 'ready' && (a.kind === 'image' || a.kind === 'video') && a.role !== 'reference' && a.id !== clip.asset_id
+      && !(asset.multicam?.angles || []).some((x) => x.asset_id === a.id),
   );
   const set = (next) => change(updateClip(timeline, clip.id, { background: next }));
   const pick = (kind) => {
@@ -55,7 +61,7 @@ function BackgroundControls({ project, timeline, clip, asset, change }) {
     if (!on) return set({ ...bg, method: 'ai', key_color: undefined, key_tolerance: undefined });
     setDetecting(true);
     try {
-      const color = await api.screenColor(project.id, clip.asset_id, clip.in + 0.5);
+      const color = await api.screenColor(project.id, pictureId, pictureAt);
       if (!color) setNote("This clip doesn't look like a green or blue screen; pick the screen colour yourself.");
       set({ ...bg, method: 'chroma', key_color: color || '#00FF00', key_tolerance: bg.key_tolerance ?? 0.12 });
     } finally {
@@ -180,6 +186,18 @@ export default function ClipInspector({ project, timeline, clipId, onChange, onS
             onChange={(e) => change(setClipTimes(timeline, clip.id, clip.in, Number(e.target.value), sourceEnd))}
           />
         </label>
+        {asset?.multicam?.angles?.length > 0 && (
+          <label>
+            <span className="control-label">Camera</span>
+            <select value={clip.angle || 0} onChange={(e) => change(updateClip(timeline, clip.id, { angle: Number(e.target.value) }))}>
+              {asset.multicam.angles.map((x, i) => (
+                <option key={x.asset_id} value={i}>
+                  {x.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           <span className="control-label">Punch-in</span>
           <select

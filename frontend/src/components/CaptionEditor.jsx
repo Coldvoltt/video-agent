@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { timecode } from '../lib/format';
+import { FONTS, fontStyle } from '../lib/fonts';
+
+const DEFAULT_EMPHASIS = { words: [], numbers: true, font: 'luckiest_guy', color: '#FFD23F', size: 1.25, uppercase: true };
+const parseWords = (text) => text.split(',').map((w) => w.trim()).filter(Boolean);
 
 const STYLES = [
   ['karaoke', 'Karaoke (highlight each word)'],
@@ -14,13 +18,17 @@ const POSITIONS = [
   ['top', 'Top'],
 ];
 
-export default function CaptionEditor({ project, act, onSeek }) {
+export default function CaptionEditor({ project, act, onSeek, billing }) {
+  const lim = billing?.billing ? billing.limits : null;
+  const styleLocked = (v) => !!(lim?.caption_styles && !lim.caption_styles.includes(v));
+  const fontsLocked = !!(lim && !lim.caption_fonts);
   const version = project?.timeline?.version;
   const [data, setData] = useState(null); // {version, settings, lines}
   const [drafts, setDrafts] = useState({}); // line index -> new text
   const [settings, setSettings] = useState({}); // pending setting changes
   const [saving, setSaving] = useState(false);
   const [newStyle, setNewStyle] = useState('karaoke');
+  const [empText, setEmpText] = useState('');
 
   useEffect(() => {
     if (!project?.id || !version) {
@@ -34,6 +42,7 @@ export default function CaptionEditor({ project, act, onSeek }) {
       .catch(() => live && setData(null));
     setDrafts({});
     setSettings({});
+    setEmpText('');
     return () => {
       live = false;
     };
@@ -74,6 +83,9 @@ export default function CaptionEditor({ project, act, onSeek }) {
   }
 
   const current = { ...data.settings, ...settings };
+  const emp = current.emphasis;
+  const setEmp = (changes) => setSetting('emphasis', changes === null ? null : { ...(emp || DEFAULT_EMPHASIS), ...changes });
+  const wordsText = empText || (emp?.words || []).join(', ');
   const changedLines = Object.entries(drafts).filter(([i, text]) => data.lines[i] && text !== data.lines[i].text);
   const dirty = changedLines.length > 0 || Object.keys(settings).length > 0;
   const setSetting = (key, value) =>
@@ -117,8 +129,8 @@ export default function CaptionEditor({ project, act, onSeek }) {
           <span className="control-label">Style</span>
           <select value={current.style} onChange={(e) => setSetting('style', e.target.value)}>
             {STYLES.map(([v, l]) => (
-              <option key={v} value={v}>
-                {l}
+              <option key={v} value={v} disabled={styleLocked(v)}>
+                {l}{styleLocked(v) ? ' (Basic plan)' : ''}
               </option>
             ))}
           </select>
@@ -149,6 +161,72 @@ export default function CaptionEditor({ project, act, onSeek }) {
           <input type="checkbox" checked={!!current.uppercase} onChange={(e) => setSetting('uppercase', e.target.checked)} />
           <span>All caps</span>
         </label>
+        <label>
+          <span className="control-label">Font</span>
+          <select value={current.font || ''} onChange={(e) => setSetting('font', e.target.value || null)} style={fontStyle(current.font)}
+            disabled={fontsLocked} title={fontsLocked ? 'Caption fonts come with the Basic plan' : undefined}>
+            <option value="">Style default</option>
+            {Object.entries(FONTS).map(([id, f]) => (
+              <option key={id} value={id} style={fontStyle(id)}>
+                {f.label}: {f.feel}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="emphasis-controls">
+        <label className="check-row">
+          <input type="checkbox" checked={!!emp} disabled={fontsLocked && !emp} onChange={(e) => setEmp(e.target.checked ? {} : null)} />
+          <span>Make important words stand out</span>
+        </label>
+        {fontsLocked && (
+          <p className="fine-print plan-hint">
+            Fonts, more caption styles and styled key words come with Basic. <a href="/dashboard?upgrade=basic#plan">Upgrade</a>
+          </p>
+        )}
+        {emp ? (
+          <div className="caption-controls">
+            <label className="emphasis-words">
+              <span className="control-label">Important words (comma between them)</span>
+              <input value={wordsText} placeholder="e.g. elephants, really long trunks"
+                onChange={(e) => {
+                  setEmpText(e.target.value);
+                  setEmp({ words: parseWords(e.target.value) });
+                }} />
+            </label>
+            <label className="checkbox">
+              <input type="checkbox" checked={!!emp.numbers} onChange={(e) => setEmp({ numbers: e.target.checked })} />
+              <span>Numbers and prices</span>
+            </label>
+            <label>
+              <span className="control-label">Their font</span>
+              <select value={emp.font} onChange={(e) => setEmp({ font: e.target.value })} style={fontStyle(emp.font)}>
+                {Object.entries(FONTS).map(([id, f]) => (
+                  <option key={id} value={id} style={fontStyle(id)}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span className="control-label">Their colour</span>
+              <input type="color" value={emp.color} onChange={(e) => setEmp({ color: e.target.value.toUpperCase() })} />
+            </label>
+            <label>
+              <span className="control-label">Size {Math.round(emp.size * 100)}%</span>
+              <input type="range" min="0.8" max="2" step="0.05" value={emp.size} onChange={(e) => setEmp({ size: Number(e.target.value) })} />
+            </label>
+            <p className="fine-print emphasis-sample" aria-hidden="true">
+              Like this: <span style={{ ...fontStyle(current.font || 'montserrat') }}>we saw the</span>{' '}
+              <span style={{ ...fontStyle(emp.font), color: emp.color, fontSize: `${emp.size}em` }}>
+                {emp.uppercase ? 'ELEPHANTS' : 'elephants'}
+              </span>
+            </p>
+          </div>
+        ) : (
+          <p className="fine-print">Or ask in chat: "make the important words pop in a comic font".</p>
+        )}
       </div>
 
       {data.lines.length === 0 ? (

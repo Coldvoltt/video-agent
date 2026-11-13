@@ -1,0 +1,427 @@
+/* Plans, vid-coins and checkout: on the landing page (light) and in the app (dark). */
+
+.coin {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--amber);
+  color: var(--ink);
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 0.72rem;
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.18);
+  flex: 0 0 auto;
+}
+
+.coin-big {
+  width: 54px;
+  height: 54px;
+  font-size: 1.6rem;
+  box-shadow: inset 0 0 0 4px rgba(0, 0, 0, 0.18);
+}
+
+.coin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 12px 4px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.coin-chip:hover {
+  border-color: var(--amber);
+}
+
+.coin-chip-plan {
+  font-weight: 600;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.currency-toggle {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 999px;
+  background: #1f1f1f;
+  justify-self: start;
+}
+
+.currency-toggle button {
+  border: 0;
+  background: transparent;
+  border-radius: 999px;
+  padding: 6px 14px;
+  font-family: var(--display);
+  font-weight: 700;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.currency-toggle button.is-on {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* ---------------------------------------------------------------- plan cards */
+
+.plan-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: stretch;
+}
+
+.plan-card {
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  gap: 12px;
+  padding: 22px;
+  border-radius: 22px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: inset 0 5px 0 var(--tone);
+}
+
+.plan-card.is-featured {
+  box-shadow: inset 0 5px 0 var(--tone), 8px 8px 0 0 var(--tone);
+}
+
+.plan-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.plan-name {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+.plan-flag {
+  background: var(--tone);
+  color: var(--tone-ink);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.plan-price {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.plan-amount {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 2.6rem;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.plan-per {
+  color: var(--text-muted);
+}
+
+.plan-coins {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.plan-features {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.plan-features li {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 8px;
+  line-height: 1.35;
+}
+
+.plan-features li::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+
+.plan-cta {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 12px 16px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--amber);
+  color: var(--ink);
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 1.02rem;
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: 0 0 0 0 var(--pink);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.plan-cta:hover:not(:disabled) {
+  transform: translate(-2px, -2px);
+  box-shadow: 3px 3px 0 0 var(--pink);
+}
+
+.plan-cta:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.plan-cta-quiet {
+  background: transparent;
+  color: inherit;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+
+.plan-cta-quiet:hover {
+  box-shadow: inset 0 0 0 1.5px currentColor, 3px 3px 0 0 var(--pink);
+}
+
+.plan-current {
+  text-align: center;
+  padding: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+/* the landing page shows them on its light section */
+.plan-cards-landing .plan-card {
+  background: #ffffff;
+  color: var(--ink);
+  border: 1px solid #d6d4cc;
+}
+
+.plan-cards-landing .plan-per {
+  color: #5d5c58;
+}
+
+.plan-cards-landing .plan-card.is-featured {
+  border-color: var(--ink);
+}
+
+.plan-cards-landing.plan-cards .plan-card.tone-paper {
+  --tone: #8a8984;
+}
+
+.lp-pricing {
+  display: grid;
+  gap: clamp(28px, 4vw, 44px);
+}
+
+.lp-pricing-head {
+  display: grid;
+  gap: 16px;
+  max-width: 44rem;
+}
+
+.lp-pricing .currency-toggle {
+  background: #e2e0d8;
+}
+
+.lp-pricing .currency-toggle button {
+  color: #3f3e3a;
+}
+
+.lp-pricing .currency-toggle button.is-on {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* ---------------------------------------------------------------- dashboard plan tab */
+
+.dash-plan {
+  display: grid;
+  gap: 18px;
+}
+
+.plan-summary {
+  background: var(--panel);
+  border-radius: var(--radius-panel);
+  padding: 18px 20px;
+  display: grid;
+  gap: 10px;
+}
+
+.plan-summary-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.plan-summary-coins {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 1.9rem;
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.plan-summary-plan {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.ledger {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.ledger li {
+  display: grid;
+  grid-template-columns: 3.4rem minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 7px 8px;
+  border-radius: 9px;
+}
+
+.ledger li:nth-child(odd) {
+  background: #2a2a2a;
+}
+
+.ledger-delta {
+  font-family: var(--display);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.ledger-delta.is-gain {
+  color: var(--mint);
+}
+
+.ledger-delta.is-spend {
+  color: #ff8fb8;
+}
+
+.ledger-when,
+.ledger-balance {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- checkout and hints */
+
+.demo-badge {
+  background: var(--amber);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.checkout-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #1f1f1f;
+}
+
+.checkout-total strong {
+  font-family: var(--display);
+  font-size: 1.6rem;
+}
+
+.checkout-card {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.checkout-card input {
+  width: 100%;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.checkout-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.checkout-decline {
+  justify-self: center;
+  color: var(--text-muted);
+}
+
+.plan-hint a,
+.notice-upgrade {
+  font-weight: 700;
+}
+
+.plan-hint a {
+  color: var(--amber);
+}
+
+.notice-upgrade {
+  padding: 4px 12px;
+}
+
+@media (max-width: 860px) {
+  .plan-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .plan-card.is-featured {
+    box-shadow: inset 0 5px 0 var(--tone);
+  }
+}
+
+@media (max-width: 560px) {
+  .ledger li {
+    grid-template-columns: 3rem minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plan-cta {
+    transition: none;
+  }
+
+  .plan-cta:hover:not(:disabled) {
+    transform: none;
+  }
+}

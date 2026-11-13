@@ -12,6 +12,7 @@ def isolated_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(config.settings, "db_path", tmp_path / "test.db")
     monkeypatch.setattr(config.settings, "storage_root", tmp_path / "storage")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("EDITOR_BILLING", "0")   # plan limits off; test_billing turns them on
     monkeypatch.setattr(store, "_initialized_for", None)
     yield
 

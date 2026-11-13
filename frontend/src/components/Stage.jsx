@@ -1,3 +1,4 @@
+import { clipSpans } from '../lib/timelineEdit';
 import { useEffect, useRef, useState } from 'react';
 import { api, outputUrl } from '../lib/api';
 import { isActive, timecode } from '../lib/format';
@@ -11,7 +12,15 @@ function latestRender(jobs, version, preview) {
   );
 }
 
-export default function Stage({ project, jobs, act, videoRef, liveRef, draft, looks, onTime }) {
+/** Vid-coins a full-quality export of the current version costs: 1 per started minute. */
+function exportCost(project) {
+  const clips = project?.timeline?.data?.clips || [];
+  const spans = clipSpans(clips);
+  const total = spans.length ? spans[spans.length - 1].end : 0;
+  return Math.max(1, Math.ceil(total / 60 - 1e-9));
+}
+
+export default function Stage({ project, jobs, act, videoRef, liveRef, draft, looks, onTime, billing }) {
   const timeline = project?.timeline;
   const version = timeline?.version;
   const data = draft || timeline?.data;
@@ -142,8 +151,9 @@ export default function Stage({ project, jobs, act, videoRef, liveRef, draft, lo
           ) : isActive(final) ? (
             <span className="tone-busy">Exporting {Math.round((final.progress || 0) * 100)}%</span>
           ) : (
-            <button className="button-primary" onClick={() => act(() => api.render(project.id, false, version))}>
-              Export full quality
+            <button className="button-primary" onClick={() => act(() => api.render(project.id, false, version))}
+              title={billing?.billing ? `Uses ${exportCost(project)} of your ${billing.coins} vid-coins` : undefined}>
+              Export full quality{billing?.billing ? ` (${exportCost(project)} coin${exportCost(project) > 1 ? 's' : ''})` : ''}
             </button>
           )}
         </span>

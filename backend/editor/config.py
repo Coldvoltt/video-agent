@@ -51,6 +51,16 @@ class Settings:
         return os.getenv("PIXABAY_API_KEY") or None
 
     @property
+    def require_account(self) -> bool:
+        """Only signed-in people can use the editor (anonymous ids are refused)."""
+        return os.getenv("EDITOR_REQUIRE_ACCOUNT", "").strip().lower() in ("1", "true", "yes")
+
+    @property
+    def secure_cookies(self) -> bool:
+        """Mark the session cookie Secure (HTTPS only). Turn on when serving over HTTPS."""
+        return os.getenv("EDITOR_SECURE_COOKIES", "").strip().lower() in ("1", "true", "yes")
+
+    @property
     def image_model(self) -> str:
         return os.getenv("EDITOR_IMAGE_MODEL") or "gpt-image-2.5-flare"
 

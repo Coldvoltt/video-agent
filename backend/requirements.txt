@@ -26,3 +26,5 @@ httpx>=0.27
 rlottie-python>=1.3.8
 # Background removal (MODNet, Apache-2.0, run on the CPU; the model downloads on first use)
 onnxruntime>=1.20
+# Cut-out maths (matte resizing, edge colour clean-up, chroma key); Apache-2.0
+opencv-python-headless>=4.8

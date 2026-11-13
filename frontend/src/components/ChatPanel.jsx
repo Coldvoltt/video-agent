@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { friendlyProgress, isActive } from '../lib/format';
+import { briefKey } from './StartScreen';
 
 const SUGGESTIONS = [
   'Cut the pauses and the ums',
-  'Make a 30-second vertical short of the best moment',
-  'Add bold captions that highlight each word',
   'Add B-roll where I mention things you can show',
-  'Spice it up: emphasise the key points and add sound effects',
+  'Karaoke captions, with the important words in a comic font',
+  'Make a 30-second vertical short of the best moment',
   'Give it a warm, punchy look with quick crossfades',
+  'Spice it up: emphasise the key points and add sound effects',
 ];
 
 /**
@@ -61,21 +62,53 @@ export default function ChatPanel({ project, jobs, messages, chatEnabled, act, o
     }
   };
 
+  // A brief written on the start screen waits here and is sent once the footage is ready.
+  const [pending, setPending] = useState(null);
+  useEffect(() => {
+    try {
+      setPending(project?.id ? localStorage.getItem(briefKey(project.id)) : null);
+    } catch {
+      setPending(null);
+    }
+  }, [project?.id]);
+  const dropPending = () => {
+    try {
+      localStorage.removeItem(briefKey(project.id));
+    } catch {
+      /* nothing stored */
+    }
+    setPending(null);
+  };
+  useEffect(() => {
+    if (pending && !locked && !sending) {
+      const m = pending;
+      dropPending();
+      send(m);
+    }
+  }, [pending, locked, sending]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const lastAssistantFailed =
     lastFailed && !messages.some((m) => m.role === 'assistant' && m.job_id === lastFailed.id);
 
   return (
     <aside className="panel chat" aria-label="Chat with the editor">
-      <h2 className="panel-title">Edit with chat</h2>
+      <div className="chat-head">
+        <span className="chat-avatar" aria-hidden="true">V</span>
+        <div className="chat-who">
+          <h2 className="panel-title">Edit with chat</h2>
+          <span>{thinking ? 'Working on it…' : project?.name ? `Editing ${project.name}` : 'Your editor'}</span>
+        </div>
+      </div>
 
       <div className="messages" ref={listRef} aria-live="polite">
         {messages.length === 0 && !thinking && (
           <div className="chat-empty">
             <p>Say what you want, the way you’d brief an editor.</p>
             <ul className="suggestions">
-              {SUGGESTIONS.map((s) => (
+              {SUGGESTIONS.map((s, i) => (
                 <li key={s}>
-                  <button className="suggestion" disabled={locked} onClick={() => send(s)}>
+                  <button className={`suggestion tone-${['yellow', 'blue', 'pink', 'mint', 'tangerine', 'yellow'][i]}`}
+                    disabled={locked} onClick={() => send(s)}>
                     {s}
                   </button>
                 </li>
@@ -104,6 +137,21 @@ export default function ChatPanel({ project, jobs, messages, chatEnabled, act, o
           </div>
         )}
       </div>
+
+      {pending && (
+        <div className="pending-brief" role="status">
+          <span className="control-label">Sends when your video is ready</span>
+          <p>{pending}</p>
+          <div className="inspector-actions">
+            <button className="button-quiet" onClick={() => { setText(pending); dropPending(); }}>
+              Edit it
+            </button>
+            <button className="button-quiet" onClick={dropPending}>
+              Don’t send
+            </button>
+          </div>
+        </div>
+      )}
 
       {waiting && (
         <p className={`chat-status ${waiting.busy ? 'is-busy' : ''}`} role="status">
@@ -143,8 +191,10 @@ export default function ChatPanel({ project, jobs, messages, chatEnabled, act, o
             }
           }}
         />
-        <button className="button-primary" disabled={!text.trim() || sending || locked}>
-          Send
+        <button className="send-button" disabled={!text.trim() || sending || locked} aria-label="Send">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 19V5M5 12l7-7 7 7" />
+          </svg>
         </button>
       </form>
     </aside>

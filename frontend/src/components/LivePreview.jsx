@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { API_BASE, assetFileUrl, stickerUrl } from '../lib/api';
 import LottieSticker from './LottieSticker';
+import { fontStyle } from '../lib/fonts';
 import { timecode } from '../lib/format';
 import { clipIndexAt, clipSpans } from '../lib/timelineEdit';
 
@@ -99,10 +100,17 @@ function setTime(el, time) {
 }
 
 const LivePreview = forwardRef(function LivePreview({ project, timeline, lines, looks, onTime }, ref) {
-  const clips = timeline.clips;
+  const assets = useMemo(() => Object.fromEntries(project.assets.map((a) => [a.id, a])), [project.assets]);
+  // Multicam clips play the chosen camera's own file at its own time (the sound comes from that camera here;
+  // the render uses the group's chosen audio).
+  const clips = useMemo(() => timeline.clips.map((c) => {
+    const angles = assets[c.asset_id]?.multicam?.angles;
+    if (!angles?.length) return c;
+    const a = angles[Math.min(c.angle || 0, angles.length - 1)];
+    return { ...c, asset_id: a.asset_id, in: c.in + a.offset, out: c.out + a.offset };
+  }), [timeline.clips, assets]);
   const spans = useMemo(() => clipSpans(clips), [clips]);
   const total = spans.length ? spans[spans.length - 1].end : 0;
-  const assets = useMemo(() => Object.fromEntries(project.assets.map((a) => [a.id, a])), [project.assets]);
   const out = timeline.output || { width: 1920, height: 1080, fit: 'contain' };
 
   const vids = [useRef(null), useRef(null)];
@@ -277,14 +285,24 @@ const LivePreview = forwardRef(function LivePreview({ project, timeline, lines, 
     const hi = cap.style === 'minimal' ? -1 : Math.min(words.length - 1, Math.floor(((t - line.start) / (line.end - line.start)) * words.length));
     const upper = cap.uppercase || cap.style === 'pop';
     const pos = { bottom: { bottom: '17%' }, top: { top: '10%' }, middle: { top: '50%', transform: 'translateY(-50%)' } }[cap.position || 'bottom'];
+    const emp = cap.emphasis;
+    const marked = new Set(line.emphasis || []);
     caption = (
-      <div className={`live-caption ${cap.style === 'boxed' ? 'is-boxed' : ''}`} style={{ ...pos, fontFamily: look.font, fontSize: base * 0.075 * look.rel * (cap.size || 1), color: cap.color || '#fff' }}>
+      <div className={`live-caption ${cap.style === 'boxed' ? 'is-boxed' : ''}`}
+        style={{ ...pos, fontFamily: look.font, ...fontStyle(cap.font), fontSize: base * 0.075 * look.rel * (cap.size || 1), color: cap.color || '#fff' }}>
         <span>
-          {words.map((w, i) => (
-            <span key={i} style={i === hi ? { color: cap.highlight_color || '#FFD23F' } : undefined}>
-              {upper ? w.toUpperCase() : w}{i < words.length - 1 ? ' ' : ''}
-            </span>
-          ))}
+          {words.map((w, i) => {
+            const isEmp = emp && marked.has(i);
+            const style = isEmp
+              ? { ...fontStyle(emp.font || 'luckiest_guy'), fontSize: `${emp.size || 1.25}em`, color: emp.color || '#FFD23F' }
+              : i === hi ? { color: cap.highlight_color || '#FFD23F' } : undefined;
+            const text = upper || (isEmp && emp.uppercase !== false) ? w.toUpperCase() : w;
+            return (
+              <span key={i} style={style}>
+                {text}{i < words.length - 1 ? ' ' : ''}
+              </span>
+            );
+          })}
         </span>
       </div>
     );
@@ -292,6 +310,7 @@ const LivePreview = forwardRef(function LivePreview({ project, timeline, lines, 
 
   const textNow = (timeline.text || []).filter((x) => t >= x.start && t < x.end);
   const stickersNow = (timeline.stickers || []).filter((x) => t >= x.start && t < x.end);
+  const effectsNow = (timeline.effects || []).filter((x) => t >= (x.start || 0) && (x.end == null || t < x.end));
   const brollNow = (timeline.broll || []).filter((b) => t >= b.start && t < b.start + b.duration && assets[b.asset_id]);
   const overlaysNow = (timeline.overlays || []).filter((o) => t >= o.start && t < o.end && assets[o.asset_id]?.kind === 'image');
   const imageClip = isImage(view.index) ? assets[clip.asset_id] : null;
@@ -303,6 +322,8 @@ const LivePreview = forwardRef(function LivePreview({ project, timeline, lines, 
   if ((timeline.audio || []).some((a) => a.duck)) unsupported.push('music ducking');
   if (timeline.audio_polish) unsupported.push('audio polish');
   if (clips.some((c) => c.background)) unsupported.push('background changes');
+  if (timeline.clips.some((c) => assets[c.asset_id]?.kind === 'multicam')) unsupported.push('the chosen multicam sound');
+  if ((timeline.effects || []).some((e) => e.type === 'denoise')) unsupported.push('video noise removal');
 
   return (
     <div className="live-preview">
@@ -345,20 +366,32 @@ const LivePreview = forwardRef(function LivePreview({ project, timeline, lines, 
                 transform: `translate(-50%, -50%) rotate(${st.rotation || 0}deg)` }} />
           );
         })}
+        {effectsNow.filter((e) => e.type === 'blur').map((e) => {
+          // same sigma as the renderer, in output pixels, scaled to the preview
+          const sigma = (2 + 58 * (e.strength ?? 0.5) ** 1.3) * ((out.width >= out.height ? out.width : out.height) / 1920) * scale;
+          const r = e.region || { x: 0, y: 0, w: 1, h: 1 };
+          return (
+            <div key={e.id} className="live-blur" style={{ left: `${r.x * 100}%`, top: `${r.y * 100}%`, width: `${r.w * 100}%`,
+              height: `${r.h * 100}%`, backdropFilter: `blur(${sigma.toFixed(1)}px)`, WebkitBackdropFilter: `blur(${sigma.toFixed(1)}px)` }} />
+          );
+        })}
+        {effectsNow.filter((e) => e.type === 'grain').map((e) => (
+          <div key={e.id} className="live-grain" style={{ opacity: 0.12 + 0.4 * (e.strength ?? 0.5) }} />
+        ))}
         {textNow.map((x) => {
           const [v, h] = GRID[x.position] || GRID.center;
           const size = TEXT_SIZE[x.style] * (x.size || 1) * base;
           if (x.style === 'keyword') {
             const top = x.position?.startsWith('bottom') ? '80%' : x.position?.startsWith('top') ? '16%' : '64%';
             return (
-              <div key={x.id} className="live-keyword" style={{ top, fontSize: size, color: x.color }}>
+              <div key={x.id} className="live-keyword" style={{ top, fontSize: size, color: x.color, ...fontStyle(x.font) }}>
                 {x.text.toUpperCase()}
               </div>
             );
           }
           return (
             <div key={x.id} className="live-layer" style={{ alignItems: v, justifyContent: h, padding: '6%' }}>
-              <span className={`live-text live-${x.style}`} style={{ fontSize: size, color: x.color }}>{x.text}</span>
+              <span className={`live-text live-${x.style}`} style={{ fontSize: size, color: x.color, ...fontStyle(x.font) }}>{x.text}</span>
             </div>
           );
         })}

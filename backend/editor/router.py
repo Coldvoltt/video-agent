@@ -8,25 +8,54 @@ returns immediately with a job id; poll GET /v2/jobs/{job_id}.
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from . import captions as captions_mod
 from . import diff as diff_mod
-from . import edits, jobs, media, storage, store
+from . import auth, billing, edits, jobs, media, storage, store
 from . import luts as luts_mod
 from .config import require_ffmpeg, settings
 from .timeline import Timeline, check_assets, default_output
 
 router = APIRouter(prefix="/v2", tags=["Editor"])
 
-USER_ID = Query(..., min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$",
-                description="Your unique user identifier")
+def current_user_id(request: Request,
+                    user_id: Optional[str] = Query(None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$",
+                                                   description="Anonymous id (ignored when signed in)")) -> str:
+    """Who is asking: the signed-in account (session cookie), else an anonymous browser id.
+    An account's id is never accepted without its session."""
+    user = auth.user_for_token(request.cookies.get(auth.SESSION_COOKIE))
+    if user:
+        return user["id"]
+    if settings.require_account or not user_id:
+        raise HTTPException(status_code=401, detail="Sign in to continue")
+    if auth.is_account(user_id):
+        raise HTTPException(status_code=401, detail="Sign in to open this account")
+    return user_id
+
+
+USER_ID = Depends(current_user_id)
 UPLOAD_CHUNK = 8 * 1024 * 1024
 
 
 # ---------------------------------------------------------------- helpers
+
+def _plan_gate(user_id: str, timeline: Timeline, assets: dict) -> None:
+    """402 when the timeline uses something the person's plan doesn't include."""
+    problems = billing.timeline_problems(user_id, timeline, assets)
+    if problems:
+        needs = "pro" if any("Pro" in p for p in problems) else "basic"
+        raise HTTPException(status_code=402, detail={"message": " ".join(problems), "upgrade": needs})
+
+
+def _feature_gate(user_id: str, feature: str) -> None:
+    try:
+        billing.check_feature(user_id, feature)
+    except billing.PlanLimit as exc:
+        raise HTTPException(status_code=402, detail={"message": str(exc), "upgrade": exc.needs}) from exc
+
 
 def _project_or_404(project_id: str, user_id: str) -> dict:
     project = store.get_project(project_id, user_id)
@@ -38,6 +67,12 @@ def _project_or_404(project_id: str, user_id: str) -> dict:
 def _public_asset(a: dict) -> dict:
     out = {k: v for k, v in a.items() if k not in ("storage_key", "collection_name", "user_id", "proxy_key")}
     out["has_proxy"] = bool(a.get("proxy_key"))
+    if a.get("kind") == "multicam" and a.get("status") == "ready":
+        mc = store.get_analysis(a["id"]) or {}
+        out["multicam"] = {
+            "angles": [{k: x.get(k) for k in ("asset_id", "offset", "label", "description")} for x in mc.get("angles", [])],
+            "audio": mc.get("audio"),
+        }
     if a.get("role") == "broll" and a.get("analysis_status") == "done":
         shots = (store.get_analysis(a["id"]) or {}).get("shots", [])
         out["shots"] = [{k: v for k, v in sh.items() if k in ("start", "end", "description")} for sh in shots]
@@ -214,6 +249,28 @@ def get_asset_file(project_id: str, asset_id: str, user_id: str = USER_ID,
     return FileResponse(path, filename=Path(asset["filename"] or path.name).name)
 
 
+class MulticamIn(BaseModel):
+    asset_ids: list[str] = Field(min_length=2, max_length=3, description="2-3 footage videos of the same take")
+    audio_asset_id: Optional[str] = Field(None, description="A separate audio recording to use for the sound")
+
+
+@router.post("/projects/{project_id}/multicam")
+def create_multicam(project_id: str, body: MulticamIn, user_id: str = USER_ID):
+    """Sync camera angles into one multicam source (a job: lines them up, trims them, picks the best audio)."""
+    _project_or_404(project_id, user_id)
+    try:
+        billing.check_angles(user_id, len(set(body.asset_ids)))
+    except billing.PlanLimit as exc:
+        raise HTTPException(status_code=402, detail={"message": str(exc), "upgrade": exc.needs}) from exc
+    assets = {a["id"]: a for a in store.list_assets(project_id)}
+    for aid in [*body.asset_ids, *([body.audio_asset_id] if body.audio_asset_id else [])]:
+        if aid not in assets:
+            raise HTTPException(status_code=404, detail=f"Asset {aid} not found")
+    job = jobs.enqueue("multicam", user_id, {"asset_ids": body.asset_ids, "audio_asset_id": body.audio_asset_id},
+                       project_id)
+    return {"job": jobs.public_view(job)}
+
+
 @router.get("/projects/{project_id}/assets/{asset_id}/screen-color")
 def get_screen_color(project_id: str, asset_id: str, user_id: str = USER_ID, t: float = Query(0.5, ge=0)):
     """The green/blue screen colour of a video (for chroma keying), or null if it isn't shot on one."""
@@ -257,6 +314,7 @@ def save_timeline(project_id: str, body: TimelineIn, user_id: str = USER_ID):
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_detail(exc))
     warnings = check_assets(timeline, assets, project_id)
+    _plan_gate(user_id, timeline, assets)
     version = store.save_timeline(project_id, timeline.to_json(), body.note)
     preview = _queue_preview(project_id, user_id, version, timeline, assets) if body.render_preview else None
     return {"version": version, "duration": round(timeline.duration, 3), "warnings": warnings,
@@ -371,6 +429,7 @@ class GenerateImageIn(BaseModel):
 def generate_broll(project_id: str, body: GenerateImageIn, user_id: str = USER_ID):
     """Generate an AI still to use as B-roll (animated with camera motion when placed)."""
     _project_or_404(project_id, user_id)
+    _feature_gate(user_id, "ai_images")
     if not settings.openai_api_key:
         raise HTTPException(status_code=409, detail="Image generation needs OPENAI_API_KEY")
     orientation = body.orientation
@@ -389,6 +448,15 @@ def generate_broll(project_id: str, body: GenerateImageIn, user_id: str = USER_I
 # ---------------------------------------------------------------- stickers and callouts (Lottie)
 
 POPULAR_EMOJI = ["🔥", "😂", "🤯", "😍", "👏", "💯", "🚀", "💡", "✅", "❌", "👀", "🎉", "💰", "❤️", "😱", "🙌"]
+
+
+@router.get("/fonts")
+def list_fonts():
+    """Fonts for captions, emphasised words and text (bundled; the browser loads the same ones from Google Fonts)."""
+    from . import typefaces
+
+    return {"fonts": [{"id": k, "label": v["label"], "feel": v["feel"], "em": v["em"]}
+                      for k, v in typefaces.FONTS.items()]}
 
 
 @router.get("/stickers")
@@ -552,7 +620,8 @@ class CaptionsUpdateIn(BaseModel):
     render_preview: bool = True
 
 
-_EDITABLE_CAPTION_SETTINGS = {"style", "position", "size", "color", "highlight_color", "uppercase", "max_words"}
+_EDITABLE_CAPTION_SETTINGS = {"style", "position", "size", "color", "highlight_color", "uppercase", "max_words",
+                              "font", "emphasis"}
 
 
 @router.post("/projects/{project_id}/captions")
@@ -583,6 +652,7 @@ def update_captions(project_id: str, body: CaptionsUpdateIn, user_id: str = USER
         timeline = Timeline.model_validate(data)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=_validation_detail(exc))
+    _plan_gate(user_id, timeline, {a["id"]: a for a in store.list_assets(project_id)})
     version = store.save_timeline(project_id, timeline.to_json(), note)
     preview = None
     assets = {a["id"]: a for a in store.list_assets(project_id)}
@@ -609,7 +679,20 @@ def start_render(project_id: str, body: RenderIn, user_id: str = USER_ID):
     problems = check_assets(timeline, assets, project_id)
     if problems:
         raise HTTPException(status_code=409, detail=problems)
-    job = jobs.enqueue("render", user_id, {"timeline_version": row["version"], "preview": body.preview}, project_id)
+    payload = {"timeline_version": row["version"], "preview": body.preview}
+    if not body.preview:
+        # a full-quality export: the plan must allow everything in it, and it costs vid-coins (refunded on failure)
+        _plan_gate(user_id, timeline, assets)
+        job_id = store.new_id()
+        cost = billing.export_cost(timeline.duration)
+        try:
+            billing.charge(user_id, cost, f"Export of version {row['version']} ({round(timeline.duration)} s)", job_id)
+        except billing.PlanLimit as exc:
+            raise HTTPException(status_code=402, detail={"message": str(exc), "upgrade": exc.needs}) from exc
+        payload["coins"] = cost if billing.enabled() else 0
+        job = jobs.enqueue("render", user_id, payload, project_id, job_id=job_id)
+    else:
+        job = jobs.enqueue("render", user_id, payload, project_id)
     return jobs.public_view(job)
 
 
@@ -691,3 +774,179 @@ def search_project(project_id: str, q: str = Query(..., min_length=1, max_length
             results.append({"asset_id": a["id"], **r})
     results.sort(key=lambda r: r["relevance"], reverse=True)
     return {"query": q, "results": results[:n]}
+
+
+# ---------------------------------------------------------------- accounts
+
+class SignUpIn(BaseModel):
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=200)
+    name: str = Field("", max_length=80)
+    claim_user_id: Optional[str] = Field(None, max_length=64, description="Anonymous id whose work moves in")
+
+
+class SignInIn(BaseModel):
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=200)
+    claim_user_id: Optional[str] = Field(None, max_length=64)
+
+
+def _start_session(response: Response, user: dict) -> None:
+    response.set_cookie(auth.SESSION_COOKIE, auth.create_session(user["id"]), max_age=auth.SESSION_DAYS * 86400,
+                        httponly=True, samesite="lax", secure=settings.secure_cookies, path="/")
+
+
+def _client_key(request: Request, email: str) -> str:
+    return f"{request.client.host if request.client else '?'}|{(email or '').strip().lower()}"
+
+
+@router.post("/auth/signup")
+def sign_up(body: SignUpIn, request: Request, response: Response):
+    key = _client_key(request, "signup")
+    if auth.too_many_attempts(key):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again in a few minutes.")
+    try:
+        user = auth.create_user(body.email, body.password, body.name)
+    except auth.AuthError as exc:
+        auth.note_failure(key)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    moved = auth.claim(body.claim_user_id, user["id"])
+    _start_session(response, user)
+    return {"user": user, "projects_moved": moved}
+
+
+@router.post("/auth/login")
+def sign_in(body: SignInIn, request: Request, response: Response):
+    key = _client_key(request, body.email)
+    if auth.too_many_attempts(key):
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again in a few minutes.")
+    user = auth.authenticate(body.email, body.password)
+    if user is None:
+        auth.note_failure(key)
+        raise HTTPException(status_code=401, detail="That email and password don't match an account.")
+    moved = auth.claim(body.claim_user_id, user["id"])
+    _start_session(response, user)
+    return {"user": user, "projects_moved": moved}
+
+
+@router.post("/auth/logout")
+def sign_out(request: Request, response: Response):
+    auth.delete_session(request.cookies.get(auth.SESSION_COOKIE))
+    response.delete_cookie(auth.SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
+@router.get("/auth/me")
+def who_am_i(request: Request):
+    """The signed-in account, or null (not an error: the page asks this on every load)."""
+    return {"user": auth.user_for_token(request.cookies.get(auth.SESSION_COOKIE)),
+            "require_account": settings.require_account}
+
+
+def _account(request: Request) -> dict:
+    user = auth.user_for_token(request.cookies.get(auth.SESSION_COOKIE))
+    if not user:
+        raise HTTPException(status_code=401, detail="Sign in to continue")
+    return user
+
+
+class ProfileIn(BaseModel):
+    name: Optional[str] = Field(None, max_length=80)
+    current_password: Optional[str] = Field(None, max_length=200)
+    new_password: Optional[str] = Field(None, max_length=200)
+    settings: Optional[dict] = None
+
+
+@router.get("/me")
+def my_account(request: Request):
+    user = _account(request)
+    return {"user": user, "settings": auth.get_settings(user["id"])}
+
+
+@router.patch("/me")
+def update_my_account(body: ProfileIn, request: Request):
+    user = _account(request)
+    try:
+        if body.new_password is not None:
+            auth.change_password(user["id"], body.current_password or "", body.new_password)
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    user = auth.update_profile(user["id"], body.name)
+    prefs = (auth.update_settings(user["id"], body.settings) if body.settings is not None
+             else auth.get_settings(user["id"]))
+    return {"user": user, "settings": prefs}
+
+
+@router.get("/dashboard")
+def dashboard(user_id: str = USER_ID):
+    """Projects with what a dashboard card shows: a picture, length, version, last change, video count."""
+    out = []
+    for p in store.list_projects(user_id):
+        assets = store.list_assets(p["id"])
+        row = store.get_timeline(p["id"])
+        thumb = next((a for a in assets if a.get("role", "footage") == "footage" and a.get("kind") == "video"
+                      and a["status"] == "ready"), None)
+        duration = None
+        if row:
+            try:
+                duration = round(Timeline.model_validate(row["data"]).duration, 2)
+            except ValidationError:
+                duration = None
+        out.append({
+            "id": p["id"], "name": p["name"], "created_at": p.get("created_at"),
+            "updated_at": (row or {}).get("created_at") or p.get("created_at"),
+            "version": (row or {}).get("version"), "last_change": (row or {}).get("note"),
+            "duration": duration,
+            "videos": sum(1 for a in assets if a.get("role", "footage") == "footage" and a.get("kind") in ("video", None)
+                          and a["status"] != "failed"),
+            "thumb": {"id": thumb["id"], "has_proxy": bool(thumb.get("proxy_key"))} if thumb else None,
+        })
+    out.sort(key=lambda x: x["updated_at"] or "", reverse=True)
+    return {"projects": out}
+
+
+# ---------------------------------------------------------------- plans and vid-coins
+
+@router.get("/plans")
+def list_plans():
+    """The plans with prices (USD and fixed NGN) and what each unlocks. Public: the landing page shows them."""
+    return {"plans": [{"id": k, **{f: v[f] for f in ("name", "coins", "months", "price", "max_angles", "max_broll",
+                                                      "caption_styles", "caption_fonts", "ai_background", "ai_images")}}
+                      for k, v in billing.plans().items()],
+            "coin": "1 vid-coin = one full-quality export, per started minute of video",
+            "billing": billing.enabled()}
+
+
+@router.get("/billing")
+def my_billing(user_id: str = USER_ID):
+    return {**billing.state(user_id), "history": billing.history(user_id), "payments": billing.payments(user_id)}
+
+
+class CheckoutIn(BaseModel):
+    plan: str = Field(pattern=r"^(basic|pro)$")
+    currency: str = Field("USD", pattern=r"^(USD|NGN)$")
+
+
+class ConfirmIn(BaseModel):
+    reference: str = Field(max_length=64)
+    success: bool = True
+
+
+@router.post("/billing/checkout")
+def start_checkout(body: CheckoutIn, request: Request):
+    """Start buying a plan. Needs an account (so the coins have somewhere to stay)."""
+    user = _account(request)
+    try:
+        return billing.checkout(user["id"], body.plan, body.currency)
+    except billing.PaymentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/billing/demo/confirm")
+def confirm_demo_payment(body: ConfirmIn, request: Request):
+    """Finish a demo payment (no money moves). A real provider replaces this with a verified webhook."""
+    user = _account(request)
+    try:
+        return billing.confirm(user["id"], body.reference, body.success)
+    except billing.PaymentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

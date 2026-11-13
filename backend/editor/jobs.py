@@ -18,8 +18,9 @@ from .config import settings
 JSON_FIELDS = ("payload", "result")
 
 
-def enqueue(kind: str, user_id: str, payload: dict, project_id: str | None = None) -> dict:
-    job_id = store.new_id()
+def enqueue(kind: str, user_id: str, payload: dict, project_id: str | None = None,
+            job_id: str | None = None) -> dict:
+    job_id = job_id or store.new_id()
     with store.connect() as c:
         c.execute(
             "INSERT INTO editor_jobs (id, kind, user_id, project_id, payload) VALUES (?, ?, ?, ?, ?)",
@@ -104,6 +105,16 @@ def fail(job_id: str, error: str) -> None:
             "UPDATE editor_jobs SET status = 'failed', error = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
             (error[-4000:], job_id),
         )
+    _refund(job_id)
+
+
+def _refund(job_id: str) -> None:
+    """A failed export gives its vid-coins back."""
+    from . import billing
+
+    job = get(job_id)
+    if job and job["kind"] == "render":
+        billing.refund_job(job)
 
 
 def recover_stale() -> int:
@@ -111,6 +122,10 @@ def recover_stale() -> int:
     cutoff = f"-{int(settings.job_stale_seconds)} seconds"
     with store.connect() as c:
         c.execute("BEGIN IMMEDIATE")
+        dead = [r[0] for r in c.execute(
+            "SELECT id FROM editor_jobs WHERE status = 'running' AND heartbeat_at < datetime('now', ?) AND attempts >= ?",
+            (cutoff, settings.job_max_attempts),
+        ).fetchall()]
         failed = c.execute(
             """UPDATE editor_jobs SET status = 'failed', finished_at = CURRENT_TIMESTAMP,
                    error = 'Worker stopped responding; giving up after max attempts'
@@ -122,6 +137,8 @@ def recover_stale() -> int:
                WHERE status = 'running' AND heartbeat_at < datetime('now', ?)""",
             (cutoff,),
         ).rowcount
+    for job_id in dead:
+        _refund(job_id)
     return failed + requeued
 
 

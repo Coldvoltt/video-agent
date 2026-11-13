@@ -16,6 +16,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .typefaces import FONT_IDS
+
 MIN_CLIP_SECONDS = 0.05
 DURATION_TOLERANCE = 0.05  # container durations are approximate
 
@@ -92,6 +94,7 @@ class Clip(_Strict):
     zoom: Optional[float] = Field(None, ge=1.0, le=2.0, description="Punch-in: 1.15 = 15% closer, centred")
     transition_in: Optional[Transition] = Field(None, description="Transition from the previous clip into this one")
     background: Optional[Background] = Field(None, description="Replace the background behind the subject")
+    angle: Optional[int] = Field(None, ge=0, le=2, description="Multicam clips: which camera (0, 1, 2) is shown")
 
     @model_validator(mode="after")
     def _order(self) -> "Clip":
@@ -142,6 +145,30 @@ class CaptionCorrection(_Strict):
         return self
 
 
+CaptionFont = Literal[FONT_IDS]  # type: ignore[valid-type]
+
+
+class CaptionEmphasis(_Strict):
+    """Important words drawn in their own font, colour and size inside the captions."""
+    words: list[str] = Field(default_factory=list, max_length=300,
+                             description="Words or short phrases to emphasise wherever they are said")
+    numbers: bool = Field(False, description="Also emphasise numbers, prices and percentages")
+    font: CaptionFont = "luckiest_guy"
+    color: str = Field("#FFD23F", pattern=HEX_COLOR)
+    size: float = Field(1.25, ge=0.8, le=2.0, description="Relative to the caption size")
+    uppercase: bool = True
+
+    @field_validator("words")
+    @classmethod
+    def _clean(cls, v: list[str]) -> list[str]:
+        out = []
+        for w in v:
+            w = " ".join(str(w).split())[:60]
+            if w and w.lower() not in (x.lower() for x in out):
+                out.append(w)
+        return out
+
+
 class Captions(_Strict):
     style: CaptionStyle = "karaoke"
     position: Literal["top", "middle", "bottom"] = "bottom"
@@ -150,6 +177,8 @@ class Captions(_Strict):
     highlight_color: str = Field("#FFD23F", pattern=HEX_COLOR)
     uppercase: bool = False
     max_words: Optional[int] = Field(None, ge=1, le=10, description="Words on screen at once (style default if unset)")
+    font: Optional[CaptionFont] = Field(None, description="Font for all caption words (style default if unset)")
+    emphasis: Optional[CaptionEmphasis] = None
     corrections: list[CaptionCorrection] = Field(default_factory=list, max_length=2000)
 
 
@@ -163,6 +192,7 @@ class TextLayer(_Strict):
     size: float = Field(1.0, ge=0.3, le=3.0)
     color: str = Field("#FFFFFF", pattern=HEX_COLOR)
     animation: Literal["none", "fade", "pop", "slide_up", "typewriter"] = "fade"
+    font: Optional[CaptionFont] = Field(None, description="Font (the style's default if unset)")
 
     @model_validator(mode="after")
     def _order(self) -> "TextLayer":
@@ -274,6 +304,46 @@ class StickerLayer(_Strict):
         return self
 
 
+EFFECTS = ("denoise", "grain", "blur")
+
+
+class Region(_Strict):
+    """A rectangle of the frame, as fractions (0..1) of the width and height."""
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    w: float = Field(gt=0, le=1)
+    h: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def _inside(self) -> "Region":
+        if self.x + self.w > 1.001 or self.y + self.h > 1.001:
+            raise ValueError("region must fit inside the frame (x + w <= 1, y + h <= 1)")
+        return self
+
+
+class EffectLayer(_Strict):
+    """A picture effect over a stretch of output time (end None = to the end of the video).
+
+    denoise: cleans up grainy, low-light footage (main video only, before the colour grade).
+    grain:   film grain over the picture (under captions and text).
+    blur:    blurs the whole picture, or only `region` (e.g. to hide a face, a screen or a number plate).
+    """
+    id: str = Field(pattern=LAYER_ID)
+    type: Literal[EFFECTS]  # type: ignore[valid-type]
+    start: float = Field(0.0, ge=0)
+    end: Optional[float] = Field(None, gt=0)
+    strength: float = Field(0.5, ge=0.05, le=1.0)
+    region: Optional[Region] = Field(None, description="blur only")
+
+    @model_validator(mode="after")
+    def _check(self) -> "EffectLayer":
+        if self.end is not None and self.end - self.start < 0.2:
+            raise ValueError(f"effect {self.id}: must last at least 0.2s")
+        if self.region and self.type != "blur":
+            raise ValueError(f"effect {self.id}: region only applies to blur")
+        return self
+
+
 class Timeline(_Strict):
     version: Literal[1] = 1
     output: OutputSpec = Field(default_factory=OutputSpec)
@@ -286,13 +356,14 @@ class Timeline(_Strict):
     broll: list[BrollLayer] = Field(default_factory=list, max_length=200)
     zooms: list[ZoomLayer] = Field(default_factory=list, max_length=300)
     stickers: list[StickerLayer] = Field(default_factory=list, max_length=100)
+    effects: list[EffectLayer] = Field(default_factory=list, max_length=50)
     audio_polish: Optional[AudioPolish] = None
 
     @model_validator(mode="after")
     def _check(self) -> "Timeline":
         ids: set[str] = set()
         for layer in [*self.clips, *self.text, *self.overlays, *self.audio, *self.broll, *self.zooms,
-                      *self.stickers]:
+                      *self.stickers, *self.effects]:
             if layer.id in ids:
                 raise ValueError(f"duplicate id: {layer.id}")
             ids.add(layer.id)
@@ -357,16 +428,25 @@ def check_assets(timeline: Timeline, assets: dict[str, dict], project_id: str) -
         return a
 
     for c in timeline.clips:
-        a = lookup("clip", c.id, c.asset_id, ("video", "image"))
+        a = lookup("clip", c.id, c.asset_id, ("video", "image", "multicam"))
+        if a and c.angle is not None:
+            if a["kind"] != "multicam":
+                errors.append(f"clip {c.id}: angle only applies to multicam clips")
+            else:
+                from . import store
+
+                angles = (a.get("multicam") or store.get_analysis(a["id"]) or {}).get("angles") or []
+                if c.angle >= len(angles):
+                    errors.append(f"clip {c.id}: angle {c.angle} doesn't exist (this multicam has {len(angles)})")
         if a and a.get("role") == "reference":
             errors.append(f"clip {c.id}: asset {c.asset_id} is a style reference and can't be used as footage")
             continue
-        if a and a["kind"] == "video" and a["duration"] is not None and c.out > a["duration"] + DURATION_TOLERANCE:
+        if a and a["kind"] in ("video", "multicam") and a["duration"] is not None                 and c.out > a["duration"] + DURATION_TOLERANCE:
             errors.append(
                 f"clip {c.id}: out={c.out:.3f}s is past the end of asset {c.asset_id} ({a['duration']:.3f}s)"
             )
         if c.background:
-            if a and a["kind"] != "video":
+            if a and a["kind"] not in ("video", "multicam"):
                 errors.append(f"clip {c.id}: background replacement needs a video clip")
             if c.background.asset_id:
                 lookup("clip background", c.id, c.background.asset_id, ("video", "image"))
@@ -404,7 +484,7 @@ def layer_warnings(timeline: Timeline) -> list[str]:
     total = timeline.duration
     out = []
     for layer in [*timeline.text, *timeline.overlays, *timeline.audio, *timeline.broll, *timeline.zooms,
-                  *timeline.stickers]:
+                  *timeline.stickers, *timeline.effects]:
         if layer.start >= total:
             out.append(f"{layer.id} starts at {layer.start:.1f}s, after the video ends ({total:.1f}s); it will be skipped")
     return out

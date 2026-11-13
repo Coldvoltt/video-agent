@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Callable
 
-from . import matte, media, renderer, storage, store
+from . import matte, media, multicam, renderer, storage, store
 from .timeline import Timeline, check_assets
 
 Progress = Callable[[float, str | None], None]
@@ -254,6 +254,9 @@ def render(job: dict, progress: Progress) -> dict:
     timeline = Timeline.model_validate(row["data"])
 
     assets = {a["id"]: a for a in store.list_assets(project_id)}
+    for a in assets.values():
+        if a.get("kind") == "multicam":
+            a["multicam"] = store.get_analysis(a["id"]) or {}
     problems = check_assets(timeline, assets, project_id)
     if problems:
         raise JobError("Timeline is not renderable: " + "; ".join(problems))
@@ -264,6 +267,8 @@ def render(job: dict, progress: Progress) -> dict:
     if timeline.grade and timeline.grade.lut_asset_id:
         used.add(timeline.grade.lut_asset_id)
     used |= {c.background.asset_id for c in timeline.clips if c.background and c.background.asset_id}
+    used |= {multicam.angle_source(assets[c.asset_id], c.angle)[0] for c in timeline.clips
+             if assets[c.asset_id].get("kind") == "multicam"}
     paths = {aid: _asset_path(assets[aid]) for aid in used}
     transcripts = {}
     if timeline.captions:
@@ -285,24 +290,33 @@ def render(job: dict, progress: Progress) -> dict:
 
 
 def _mattes(timeline: Timeline, assets: dict, paths: dict, progress: Progress) -> tuple[dict, float]:
-    """Person mattes for clips with an AI background; computes (and caches) missing ones.
-    Returns {clip_id: (matte file, source time it starts at)} and the share of progress used."""
-    wanted: dict[str, list] = {}
+    """Cut-outs for clips with a new background; computes (and caches) missing ones.
+    Returns {clip_id: (foreground, alpha, source time they start at)} and the share of progress used."""
+    groups: dict[tuple, list] = {}
     for c in timeline.clips:
-        if c.background and c.background.method == "ai":
-            wanted.setdefault(c.asset_id, []).append(c)
-    if not wanted:
+        bg = c.background
+        if bg:
+            # multicam clips are cut out of the angle's own footage, at its own times
+            aid, shift = c.asset_id, 0.0
+            if assets[aid].get("kind") == "multicam":
+                aid, shift = multicam.angle_source(assets[aid], c.angle)
+            key = (aid, bg.method, bg.key_color if bg.method == "chroma" else None,
+                   bg.key_tolerance if bg.method == "chroma" else None)
+            groups.setdefault(key, []).append((c, c.in_ + shift, c.out + shift))
+    if not groups:
         return {}, 0.0
-    missing = any(matte.find(assets[aid], c.in_, c.out) is None for aid, cs in wanted.items() for c in cs)
+    tag = lambda k: matte.method_tag(k[1], k[2], k[3])  # noqa: E731
+    missing = any(matte.find(assets[k[0]], a, b, tag=tag(k)) is None for k, cs in groups.items() for _, a, b in cs)
     share = 0.6 if missing else 0.0
     out = {}
     try:
-        n = len(wanted)
-        for k, (aid, clips) in enumerate(wanted.items()):
-            found = matte.ensure(assets[aid], paths[aid], [(c.in_, c.out) for c in clips],
-                                 progress=lambda f, m, _k=k: progress(share * (_k + f) / n, m))
-            for c in clips:
-                out[c.id] = found[(c.in_, c.out)]
+        n = len(groups)
+        for idx, (k, clips) in enumerate(groups.items()):
+            aid, method, key_color, tol = k
+            found = matte.ensure(assets[aid], paths[aid], [(a, b) for _, a, b in clips], method, key_color, tol,
+                                 progress=lambda f, m, _i=idx: progress(share * (_i + f) / n, m))
+            for c, a, b in clips:
+                out[c.id] = found[(a, b)]
     except matte.MatteError as e:
         raise JobError(str(e)) from e
     return out, share
@@ -369,7 +383,34 @@ def queue_missing_proxies() -> int:
     return len(rows)
 
 
+def vision_or_none():
+    """The vision model as a plain function, or None without an API key."""
+    from .config import settings
+
+    if not settings.openai_api_key:
+        return None
+    try:
+        from .llm import get_provider
+
+        provider = get_provider()
+    except Exception:  # noqa: BLE001
+        return None
+    return provider.vision_json if hasattr(provider, "vision_json") else None
+
+
+def make_multicam(job: dict, progress: Progress) -> dict:
+    """Sync 2-3 camera angles (and an optional separate audio file) into one multicam asset."""
+    payload = job["payload"]
+    try:
+        asset = multicam.create(job["project_id"], payload["asset_ids"], payload.get("audio_asset_id"),
+                                vision_or_none(), progress)
+    except multicam.MulticamError as exc:
+        raise JobError(str(exc)) from exc
+    return {"asset_id": asset["id"], "duration": asset["duration"]}
+
+
 HANDLERS: dict[str, Callable[[dict, Progress], dict]] = {
+    "multicam": make_multicam,
     "stock": stock_import,
     "genimage": generate_image,
     "proxy": make_proxy,
